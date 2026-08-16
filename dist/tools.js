@@ -83,12 +83,11 @@ export function buildColorTools() {
             if (!parsed.ok)
                 return { input: args.input, ok: false, error: parsed.error, alpha: 1 };
             const { rgba, name } = parsed.color;
-            const result = {
-                input: args.input,
-                ok: true,
-                alpha: round(rgba.a, 3),
-                name,
-            };
+            // Assign keys only when present: JSON round-trips are lossy when a key
+            // holds `undefined` (dsh-tools output gate rejects "not lossless JSON").
+            const result = { input: args.input, ok: true, alpha: round(rgba.a, 3) };
+            if (name !== undefined)
+                result.name = name;
             if (format === 'all' || format === 'hex')
                 result.hex = rgbaToHex(rgba);
             if (format === 'all' || format === 'rgb')

@@ -224,8 +224,13 @@ function hueToRgb(p, q, t) {
         value = p + (q - p) * (2 / 3 - tt) * 6;
     else
         value = p;
-    // Clamp to [p, q] to absorb floating-point dust at sextant boundaries
-    // (e.g. (2/3 - 0.5) * 6 evaluates to 0.9999999999999998 instead of 1).
+    // Snap to [p, q] with an epsilon to absorb floating-point dust at sextant
+    // boundaries (e.g. (2/3 - 0.5) * 6 evaluates to 0.9999999999999998 instead
+    // of 1). Without this, hsl(180) would round-trip to 254.99999999999994.
+    if (value > q - 1e-12)
+        return q;
+    if (value < p + 1e-12)
+        return p;
     return Math.min(q, Math.max(p, value));
 }
 /** Convert HSL (h degrees, s/l in [0, 1]) to RGB in [0, 255]. */
