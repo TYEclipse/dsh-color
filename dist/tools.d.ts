@@ -10,6 +10,8 @@ export interface ToolSet {
     convert_color: ToolDefinition;
     contrast_ratio: ToolDefinition;
     color_info: ToolDefinition;
+    color_scheme: ToolDefinition;
+    adjust_color: ToolDefinition;
 }
 /** Result of convert_color, kept flat and JsonValue-safe. */
 export interface ConvertResult {
@@ -52,6 +54,32 @@ export interface InfoResult {
     count: number;
     total: number;
     matches: ColorMatch[];
+}
+/** One color of a generated scheme. */
+export interface SchemeColor {
+    hex: string;
+    rgb: string;
+    hsl: string;
+}
+/** Result of color_scheme. */
+export interface SchemeResult {
+    ok: boolean;
+    error?: string;
+    input: string;
+    type: string;
+    count: number;
+    colors: SchemeColor[];
+}
+/** Result of adjust_color. */
+export interface AdjustResult {
+    ok: boolean;
+    error?: string;
+    input: string;
+    op: string;
+    amount: number;
+    hex?: string;
+    rgb?: string;
+    hsl?: string;
 }
 /** Build all three tool definitions. */
 export declare function buildColorTools(): ToolSet;

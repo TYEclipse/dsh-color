@@ -1,7 +1,7 @@
 {
   "name": "dsh-color",
-  "version": "0.1.0",
-  "description": "Color conversion toolbox for DeepSeek Harness (dsh): parse and convert any CSS color (hex / rgb / hsl / hwb / named), WCAG contrast ratios with AA/AAA verdicts, and named-color lookup — zero runtime dependencies, pure math",
+  "version": "0.2.0",
+  "description": "Color toolbox for DeepSeek Harness (dsh): parse and convert any CSS color (hex / rgb / hsl / hwb / named), WCAG contrast ratios with AA/AAA verdicts, named-color lookup, harmonious palette generation (complementary / analogous / triadic / split-complementary / tetradic / square / monochromatic), and color adjustments (lighten / darken / saturate / desaturate / hue-rotate) — zero runtime dependencies, pure math",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,7 +28,10 @@
     "hwb",
     "wcag",
     "contrast",
-    "accessibility"
+    "accessibility",
+    "palette",
+    "color-scheme",
+    "harmony"
   ],
   "license": "MIT",
   "repository": {

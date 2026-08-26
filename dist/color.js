@@ -150,9 +150,21 @@ function parseAlpha(token) {
 // ---------------------------------------------------------------------------
 // Conversions
 // ---------------------------------------------------------------------------
+/**
+ * Round a channel float to the nearest integer, ties rounding up, with a tiny
+ * epsilon to absorb FP dust at exact .5 boundaries: hsl(210, 100%, 50%) has a
+ * green channel of exactly 127.5 mathematically, but IEEE double evaluates the
+ * sextant interpolation to 127.4999…9 — CSS serialization rounds half up
+ * (spec example: hsl(120deg 100% 25%) = rgb(0 128 0)), so the guard recovers
+ * 128. The bias is 1e-7, far larger than FP dust (~1e-13) and far smaller than
+ * any rounding decision a real color value could hinge on.
+ */
+export function roundChannel(value) {
+    return Math.round(value + 1e-7);
+}
 /** Convert RGBA (0–255) to a lowercase hex string, with alpha when < 1. */
 export function rgbaToHex(rgba) {
-    const to2 = (v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+    const to2 = (v) => clamp(roundChannel(v), 0, 255).toString(16).padStart(2, '0');
     let hex = `#${to2(rgba.r)}${to2(rgba.g)}${to2(rgba.b)}`;
     if (rgba.a < 1)
         hex += to2(rgba.a * 255);
@@ -160,9 +172,9 @@ export function rgbaToHex(rgba) {
 }
 /** Convert RGBA (0–255) to an rgb()/rgba() string. */
 export function rgbaToRgbString(rgba) {
-    const r = Math.round(rgba.r);
-    const g = Math.round(rgba.g);
-    const b = Math.round(rgba.b);
+    const r = roundChannel(rgba.r);
+    const g = roundChannel(rgba.g);
+    const b = roundChannel(rgba.b);
     if (rgba.a >= 1)
         return `rgb(${r}, ${g}, ${b})`;
     return `rgba(${r}, ${g}, ${b}, ${round(rgba.a, 3)})`;
@@ -293,6 +305,78 @@ export function wcagLevel(ratio, largeText) {
     if (ratio >= aa)
         return 'AA';
     return 'fail';
+}
+/**
+ * Canonical hue offsets (degrees) for the hue-rotation harmonies. The base
+ * hue comes first for every type except analogous, whose offsets are centered
+ * on the base ([-30, 0, 30] for 3 colors, [-60, -30, 0, 30, 60] for 5).
+ */
+const HUE_ROTATION_OFFSETS = {
+    complementary: [0, 180],
+    triadic: [0, 120, 240],
+    'split-complementary': [0, 150, 210],
+    tetradic: [0, 60, 180, 240],
+    square: [0, 90, 180, 270],
+};
+/** All valid harmony types, for runtime validation in the tool layer. */
+export const HARMONY_TYPES = [
+    'complementary',
+    'analogous',
+    'triadic',
+    'split-complementary',
+    'tetradic',
+    'square',
+    'monochromatic',
+];
+/**
+ * Generate the HSL triplets of a color harmony.
+ *
+ * - hue-rotation types keep the base saturation/lightness and rotate the hue.
+ * - analogous uses 3 offsets (default) or 5 (count = 5), centered on the base.
+ * - monochromatic keeps hue/saturation and steps lightness `count` times
+ *   (clamped to 2–9, default 5), evenly spaced in [max(0.02, l−0.4),
+ *   min(0.98, l+0.4)] so the base lightness always sits inside the range.
+ *
+ * `count` is ignored for the other four types.
+ */
+export function harmonyHsl(h, s, l, type, count) {
+    if (type === 'analogous') {
+        const offsets = count === 5 ? [-60, -30, 0, 30, 60] : [-30, 0, 30];
+        return offsets.map((offset) => ({ h: normalizeHue(h + offset), s, l }));
+    }
+    if (type === 'monochromatic') {
+        const n = clamp(Math.trunc(count ?? 5), 2, 9);
+        const lower = Math.max(0.02, l - 0.4);
+        const upper = Math.min(0.98, l + 0.4);
+        const step = n > 1 ? (upper - lower) / (n - 1) : 0;
+        return Array.from({ length: n }, (_unused, i) => ({ h, s, l: lower + step * i }));
+    }
+    const offsets = HUE_ROTATION_OFFSETS[type];
+    return offsets.map((offset) => ({ h: normalizeHue(h + offset), s, l }));
+}
+/** All valid adjustment operations, for runtime validation in the tool layer. */
+export const ADJUST_OPS = ['lighten', 'darken', 'saturate', 'desaturate', 'hue'];
+/**
+ * Apply one adjustment to an HSL triplet.
+ *
+ * `amount` semantics: for lighten/darken/saturate/desaturate it is percentage
+ * points in [0, 100] (clamped); for hue it is degrees to rotate (any sign,
+ * normalized to [0, 360)). Saturating an achromatic color (s = 0) is a no-op,
+ * matching CSS filter saturate() — a gray has no hue to intensify.
+ */
+export function adjustHsl(h, s, l, op, amount) {
+    switch (op) {
+        case 'lighten':
+            return { h, s, l: clamp(l + clamp(amount, 0, 100) / 100, 0, 1) };
+        case 'darken':
+            return { h, s, l: clamp(l - clamp(amount, 0, 100) / 100, 0, 1) };
+        case 'saturate':
+            return s === 0 ? { h, s, l } : { h, s: clamp(s + clamp(amount, 0, 100) / 100, 0, 1), l };
+        case 'desaturate':
+            return { h, s: clamp(s - clamp(amount, 0, 100) / 100, 0, 1), l };
+        case 'hue':
+            return { h: normalizeHue(h + amount), s, l };
+    }
 }
 // ---------------------------------------------------------------------------
 // Helpers

@@ -6,8 +6,14 @@
  * @module dsh-color/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { contrastRatio, parseColorInput, relativeLuminance, rgbaToHex, rgbaToHslString, rgbaToHwbString, rgbaToRgbString, round, wcagLevel, } from "./color.js";
+import { adjustHsl, ADJUST_OPS, contrastRatio, harmonyHsl, HARMONY_TYPES, hslToRgb, parseColorInput, relativeLuminance, rgbaToHex, rgbaToHslString, rgbaToHwbString, rgbaToRgbString, rgbToHsl, round, wcagLevel, } from "./color.js";
 import { lookupNamed, NAMED_COLORS, namesByHex, searchNamed } from "./named.js";
+/** Turn an HSL triplet into the three string formats, keeping alpha. */
+function hslToStrings(h, s, l, a) {
+    const rgb = hslToRgb(h, s, l);
+    const rgba = { r: rgb.r, g: rgb.g, b: rgb.b, a };
+    return { hex: rgbaToHex(rgba), rgb: rgbaToRgbString(rgba), hsl: rgbaToHslString(rgba) };
+}
 function matchRow(name, hex) {
     const rgba = parseHexStrict(hex);
     return {
@@ -239,6 +245,151 @@ export function buildColorTools() {
             return { ok: true, query, by, count: matched.length, total: rows.length, matches: rows };
         },
     });
-    return { convert_color, contrast_ratio, color_info };
+    const color_scheme = defineTool({
+        name: 'color_scheme',
+        description: 'Generate a harmonious color palette from a base color (any CSS format): complementary, analogous (3 or 5), '
+            + 'triadic, split-complementary, tetradic, square, or monochromatic (2–9 shades). Every color is returned as hex, '
+            + 'rgb() and hsl(). Rotation harmonies keep the base saturation/lightness and rotate the hue; monochromatic steps '
+            + 'lightness around the base. Pure local math, read-only.',
+        parameters: {
+            input: { type: 'string', required: true, description: 'Base color, in any supported CSS format (hex, rgb(), hsl(), hwb(), or a CSS name).' },
+            type: {
+                type: 'string',
+                enum: ['complementary', 'analogous', 'triadic', 'split-complementary', 'tetradic', 'square', 'monochromatic'],
+                description: 'Palette type. Default complementary.',
+            },
+            count: {
+                type: 'number',
+                description: 'Number of colors. Only used by analogous (3 or 5, default 3) and monochromatic (2–9, default 5). Ignored by the other types.',
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    ok: { type: 'boolean', required: true },
+                    error: { type: 'string' },
+                    input: { type: 'string', required: true },
+                    type: { type: 'string', required: true },
+                    count: { type: 'number', required: true },
+                    colors: {
+                        type: 'array',
+                        required: true,
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                hex: { type: 'string', required: true },
+                                rgb: { type: 'string', required: true },
+                                hsl: { type: 'string', required: true },
+                            },
+                        },
+                    },
+                },
+            },
+            render: (_args, value) => {
+                const result = value;
+                if (!result.ok)
+                    return [{ type: 'text', text: `color_scheme: ${result.error ?? 'invalid color'}` }];
+                const lines = result.colors.map((c) => `  ${c.hex}  ${c.rgb.padEnd(20)}  ${c.hsl}`);
+                return [{
+                        type: 'text',
+                        text: `${result.type} palette from ${result.input} (${result.count} colors):\n${lines.join('\n')}`,
+                    }];
+            },
+        },
+        async execute(args) {
+            // The enum is validated at the schema layer before execute runs; the
+            // fallback here only guards direct programmatic calls.
+            const requested = args.type ?? 'complementary';
+            const type = HARMONY_TYPES.includes(requested)
+                ? requested
+                : 'complementary';
+            const parsed = parseColorInput(args.input, lookupNamed);
+            if (!parsed.ok) {
+                return { input: args.input, type, count: 0, ok: false, error: parsed.error, colors: [] };
+            }
+            const count = args.count;
+            if (type === 'analogous' && count !== undefined && count !== 3 && count !== 5) {
+                return {
+                    input: args.input,
+                    type,
+                    count: 0,
+                    ok: false,
+                    error: `analogous palettes support 3 or 5 colors, got ${count}`,
+                    colors: [],
+                };
+            }
+            const { rgba } = parsed.color;
+            const { h, s, l } = rgbToHsl(rgba.r, rgba.g, rgba.b);
+            const triplets = harmonyHsl(h, s, l, type, count);
+            const colors = triplets.map((t) => hslToStrings(t.h, t.s, t.l, rgba.a));
+            return { input: args.input, type, count: colors.length, ok: true, colors };
+        },
+    });
+    const adjust_color = defineTool({
+        name: 'adjust_color',
+        description: 'Adjust a color: lighten or darken by N percentage points, saturate or desaturate by N percentage points, '
+            + 'or rotate the hue by N degrees. Returns the adjusted color as hex, rgb() and hsl(). Saturating an achromatic '
+            + 'color (gray) is a no-op, matching CSS filter semantics. Pure local math, read-only.',
+        parameters: {
+            input: { type: 'string', required: true, description: 'The color to adjust, in any supported CSS format.' },
+            op: {
+                type: 'string',
+                required: true,
+                enum: ['lighten', 'darken', 'saturate', 'desaturate', 'hue'],
+                description: 'Operation to apply. "hue" rotates the hue; the others shift lightness/saturation.',
+            },
+            amount: {
+                type: 'number',
+                required: true,
+                description: 'For lighten/darken/saturate/desaturate: percentage points (0–100). For hue: rotation degrees (negative ok, normalized).',
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    ok: { type: 'boolean', required: true },
+                    error: { type: 'string' },
+                    input: { type: 'string', required: true },
+                    op: { type: 'string', required: true },
+                    amount: { type: 'number', required: true },
+                    hex: { type: 'string' },
+                    rgb: { type: 'string' },
+                    hsl: { type: 'string' },
+                },
+            },
+            render: (_args, value) => {
+                const result = value;
+                if (!result.ok)
+                    return [{ type: 'text', text: `adjust_color: ${result.error ?? 'invalid color'}` }];
+                const pieces = [`${result.input} ${result.op} ${result.amount} =`];
+                if (result.hex !== undefined)
+                    pieces.push(result.hex);
+                if (result.rgb !== undefined)
+                    pieces.push(result.rgb);
+                if (result.hsl !== undefined)
+                    pieces.push(result.hsl);
+                return [{ type: 'text', text: pieces.join(' ') }];
+            },
+        },
+        async execute(args) {
+            // The enum is validated at the schema layer; fallback guards direct calls.
+            const op = ADJUST_OPS.includes(args.op) ? args.op : 'lighten';
+            const amount = args.amount;
+            const parsed = parseColorInput(args.input, lookupNamed);
+            if (!parsed.ok)
+                return { input: args.input, op, amount, ok: false, error: parsed.error };
+            const { rgba } = parsed.color;
+            const { h, s, l } = rgbToHsl(rgba.r, rgba.g, rgba.b);
+            const adjusted = adjustHsl(h, s, l, op, amount);
+            const strings = hslToStrings(adjusted.h, adjusted.s, adjusted.l, rgba.a);
+            return { input: args.input, op, amount, ok: true, hex: strings.hex, rgb: strings.rgb, hsl: strings.hsl };
+        },
+    });
+    return { convert_color, contrast_ratio, color_info, color_scheme, adjust_color };
 }
 //# sourceMappingURL=tools.js.map

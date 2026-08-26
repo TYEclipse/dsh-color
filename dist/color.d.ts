@@ -37,6 +37,16 @@ export declare function parseHex(input: string): Rgba | undefined;
  * both legacy comma syntax and modern space syntax (rgb(255 0 0 / 0.5)).
  */
 export declare function parseFunctional(input: string): Rgba | undefined;
+/**
+ * Round a channel float to the nearest integer, ties rounding up, with a tiny
+ * epsilon to absorb FP dust at exact .5 boundaries: hsl(210, 100%, 50%) has a
+ * green channel of exactly 127.5 mathematically, but IEEE double evaluates the
+ * sextant interpolation to 127.4999…9 — CSS serialization rounds half up
+ * (spec example: hsl(120deg 100% 25%) = rgb(0 128 0)), so the guard recovers
+ * 128. The bias is 1e-7, far larger than FP dust (~1e-13) and far smaller than
+ * any rounding decision a real color value could hinge on.
+ */
+export declare function roundChannel(value: number): number;
 /** Convert RGBA (0–255) to a lowercase hex string, with alpha when < 1. */
 export declare function rgbaToHex(rgba: Rgba): string;
 /** Convert RGBA (0–255) to an rgb()/rgba() string. */
@@ -72,6 +82,43 @@ export declare function relativeLuminance(rgba: Rgba): number;
 export declare function contrastRatio(first: Rgba, second: Rgba): number;
 /** WCAG level verdict for a ratio, given the text size class. */
 export declare function wcagLevel(ratio: number, largeText: boolean): 'AAA' | 'AA' | 'fail';
+/** The seven palette types color_scheme can generate. */
+export type HarmonyType = 'complementary' | 'analogous' | 'triadic' | 'split-complementary' | 'tetradic' | 'square' | 'monochromatic';
+/** All valid harmony types, for runtime validation in the tool layer. */
+export declare const HARMONY_TYPES: readonly HarmonyType[];
+/**
+ * Generate the HSL triplets of a color harmony.
+ *
+ * - hue-rotation types keep the base saturation/lightness and rotate the hue.
+ * - analogous uses 3 offsets (default) or 5 (count = 5), centered on the base.
+ * - monochromatic keeps hue/saturation and steps lightness `count` times
+ *   (clamped to 2–9, default 5), evenly spaced in [max(0.02, l−0.4),
+ *   min(0.98, l+0.4)] so the base lightness always sits inside the range.
+ *
+ * `count` is ignored for the other four types.
+ */
+export declare function harmonyHsl(h: number, s: number, l: number, type: HarmonyType, count?: number): Array<{
+    h: number;
+    s: number;
+    l: number;
+}>;
+/** The five operations adjust_color can apply. */
+export type AdjustOp = 'lighten' | 'darken' | 'saturate' | 'desaturate' | 'hue';
+/** All valid adjustment operations, for runtime validation in the tool layer. */
+export declare const ADJUST_OPS: readonly AdjustOp[];
+/**
+ * Apply one adjustment to an HSL triplet.
+ *
+ * `amount` semantics: for lighten/darken/saturate/desaturate it is percentage
+ * points in [0, 100] (clamped); for hue it is degrees to rotate (any sign,
+ * normalized to [0, 360)). Saturating an achromatic color (s = 0) is a no-op,
+ * matching CSS filter saturate() — a gray has no hue to intensify.
+ */
+export declare function adjustHsl(h: number, s: number, l: number, op: AdjustOp, amount: number): {
+    h: number;
+    s: number;
+    l: number;
+};
 /** Round to `digits` decimals, trimming trailing zeros. */
 export declare function round(value: number, digits: number): number;
 /** Convenience: parse a user color string, resolving named colors first. */
