@@ -1,10 +1,13 @@
 /**
- * dsh-color — color conversion toolbox for DeepSeek Harness.
+ * dsh-color — color toolbox for DeepSeek Harness.
  *
- * Three pure-math tools, zero runtime dependencies:
+ * Five pure-math tools, zero runtime dependencies:
  *   convert_color  — parse any CSS color (hex / rgb() / hsl() / hwb() / named) and convert formats
  *   contrast_ratio — WCAG 2.x contrast ratio with AA/AAA verdicts for normal or large text
  *   color_info     — CSS named-color lookup by name substring or by exact value
+ *   color_scheme   — harmonious palettes (complementary / analogous / triadic / split-complementary /
+ *                    tetradic / square / monochromatic) from a base color
+ *   adjust_color   — lighten / darken / saturate / desaturate / hue-rotate by a given amount
  *
  * Everything is computed locally: no network, no filesystem, no side effects.
  *
