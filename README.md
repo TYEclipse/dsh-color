@@ -2,7 +2,7 @@
 
 Color toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh):
 parse and convert any CSS color, evaluate WCAG contrast, look up CSS color names,
-generate harmonious palettes, and adjust colors.
+generate harmonious palettes, adjust and blend colors, and repair contrast.
 
 **Pure local math — zero runtime dependencies, no network, no side effects.**
 
@@ -15,6 +15,8 @@ generate harmonious palettes, and adjust colors.
 | `color_info` | CSS named-color lookup: search by name substring ("blue" → blue, blueviolet, lightblue, …) or by exact value (aqua ≡ cyan), with hex/rgb/hsl/luminance per match |
 | `color_scheme` | Harmonious palettes from a base color: complementary, analogous (3/5), triadic, split-complementary, tetradic, square, monochromatic (2–9 shades) — every color as hex + rgb + hsl |
 | `adjust_color` | lighten / darken / saturate / desaturate (percentage points) or hue-rotate (degrees) a color — result as hex + rgb + hsl |
+| `blend_colors` | Blend two colors: `over` (alpha compositing — what a translucent overlay actually shows) or `mix` (premultiplied sRGB interpolation, the math behind CSS `color-mix(in srgb, …)`) with a weight |
+| `ensure_contrast` | The nearest color to a foreground that reaches a WCAG target on a given background: hue and saturation kept, lightness moved toward black or white, ratio before/after and the lightness shift reported; says so — with the best achievable ratio — when the target is impossible |
 
 ## Install
 
@@ -59,6 +61,21 @@ adjust_color("#336699", op: "lighten", amount: 25)
 
 adjust_color("#ff0000", op: "hue", amount: 120)
   → #00ff00
+
+blend_colors("rgba(255, 0, 0, 0.5)", "#ffffff")
+  → #ff8080 — half-transparent red on white
+
+blend_colors("#ff0000", "#0000ff", mode: "mix", weight: 0.5)
+  → #800080 — purple, the color-mix() midpoint
+
+ensure_contrast("#777777", "#ffffff")
+  → #767676 at 4.54:1 — darkens just enough to pass AA
+
+ensure_contrast("#555555", "#000000", level: "AAA")
+  → #959595 at 7.01:1 — lighten, +24.9 lightness points
+
+ensure_contrast("#8080ff", "#808080", level: "AAA")
+  → target unreachable; best #000000 at 5.32:1
 ```
 
 ## Feature notes
@@ -81,6 +98,22 @@ adjust_color("#ff0000", op: "hue", amount: 120)
 - **Adjustment math**: lighten/darken/saturate/desaturate shift the channel by
   N percentage points (clamped 0–100); hue rotates by N degrees (any sign,
   normalized). Saturating a gray is a no-op, matching CSS filter semantics.
+- **Blend math**: `over` is Porter-Duff source-over with non-premultiplied
+  channels (CSS Compositing and Blending §9.1) — the color a browser paints for
+  a translucent overlay; `mix` interpolates premultiplied sRGB channels and
+  divides the alpha back out, which is exactly `color-mix(in srgb, …)`. Weights
+  outside 0–1 are clamped instead of extrapolated.
+- **Contrast repair**: `ensure_contrast` keeps hue and saturation and moves
+  lightness toward black or white — `auto` picks whichever extreme scores higher
+  against the background. It scans 1000 lightness steps and tests the **8-bit
+  rounded** color at each step (what passes is what a renderer will show), then
+  bisects 20 times so the shift stays minimal (e.g. `#777777` → `#767676`, not
+  `#757575`). Unreachable targets report the best achievable ratio rather than a
+  color that silently misses.
+- **Input channel scales** (fixed in v0.3.0): a bare number in `rgb()` is on the
+  0–255 scale (`rgb(51, 102, 153)` = `#336699`) while a percentage is a share of
+  255; in `hsl()`/`hwb()` a bare number means the same as a percentage
+  (`hsl(210 100 50)` = `hsl(210, 100%, 50%)`).
 - **Channel serialization** rounds half up with a floating-point dust guard,
   matching CSS serialization (e.g. `hsl(210, 100%, 50%)` → `rgb(0, 128, 255)`).
 - Out-of-range channels are clamped (modern CSS behavior).

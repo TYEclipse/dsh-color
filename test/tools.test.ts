@@ -112,3 +112,21 @@ describe('color_info tool', () => {
     expect(bad.ok).toBe(false)
   })
 })
+
+describe('convert_color parser regression (R42)', () => {
+  it('converts a mid-range legacy rgb() input to the right hex', async () => {
+    const result = await tools.convert_color.execute({ input: 'rgb(51, 102, 153)', format: 'hex' })
+    expect(result.ok).toBe(true)
+    expect(result.hex).toBe('#336699')
+  })
+
+  it('agrees across comma, space, percentage and hex spellings of one color', async () => {
+    const legacy = await tools.convert_color.execute({ input: 'rgb(51, 102, 153)', format: 'hex' })
+    const modern = await tools.convert_color.execute({ input: 'rgb(51 102 153)', format: 'hex' })
+    const percent = await tools.convert_color.execute({ input: 'rgb(20%, 40%, 60%)', format: 'hex' })
+    const hex = await tools.convert_color.execute({ input: '#336699', format: 'hex' })
+    expect(legacy.hex).toBe(hex.hex)
+    expect(modern.hex).toBe(hex.hex)
+    expect(percent.hex).toBe(hex.hex)
+  })
+})

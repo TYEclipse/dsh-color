@@ -10,7 +10,12 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import {
   adjustHsl,
   ADJUST_OPS,
+  blendMix,
+  blendOver,
+  BLEND_MODES,
+  CONTRAST_DIRECTIONS,
   contrastRatio,
+  ensureContrast,
   harmonyHsl,
   HARMONY_TYPES,
   hslToRgb,
@@ -24,6 +29,8 @@ import {
   round,
   wcagLevel,
   type AdjustOp,
+  type BlendMode,
+  type ContrastDirection,
   type HarmonyType,
   type Rgba,
 } from './color.ts'
@@ -35,6 +42,8 @@ export interface ToolSet {
   color_info: ToolDefinition
   color_scheme: ToolDefinition
   adjust_color: ToolDefinition
+  blend_colors: ToolDefinition
+  ensure_contrast: ToolDefinition
 }
 
 /** Result of convert_color, kept flat and JsonValue-safe. */
@@ -110,6 +119,41 @@ export interface AdjustResult {
   hex?: string
   rgb?: string
   hsl?: string
+}
+
+/** Result of blend_colors. */
+export interface BlendResult {
+  ok: boolean
+  error?: string
+  foreground: string
+  background: string
+  mode: string
+  weight?: number
+  hex?: string
+  rgb?: string
+  hsl?: string
+  alpha?: number
+}
+
+/** Result of ensure_contrast. */
+export interface EnsureContrastResult {
+  ok: boolean
+  error?: string
+  foreground: string
+  background: string
+  level: string
+  largeText: boolean
+  target: number
+  direction: string
+  inputRatio?: number
+  changed?: boolean
+  hex?: string
+  rgb?: string
+  hsl?: string
+  ratio?: number
+  lightnessShift?: number
+  bestHex?: string
+  bestRatio?: number
 }
 
 /** Turn an HSL triplet into the three string formats, keeping alpha. */
@@ -478,5 +522,209 @@ export function buildColorTools(): ToolSet {
     },
   })
 
-  return { convert_color, contrast_ratio, color_info, color_scheme, adjust_color }
+  const blend_colors = defineTool({
+    name: 'blend_colors',
+    description: 'Blend two colors. Mode "over" paints the first color on top of the second with proper alpha '
+      + 'compositing (what a browser shows for a translucent overlay over a backdrop) and returns the visible color; '
+      + 'mode "mix" interpolates the two colors in premultiplied sRGB, the same math as CSS color-mix(in srgb, …), '
+      + 'with "weight" setting how much of the second color goes in. Useful for hover tints, semi-transparent panels, '
+      + 'gradient midpoints and checking what a 12% white overlay actually looks like. Pure local math, read-only.',
+    parameters: {
+      foreground: { type: 'string', required: true, description: 'Top color for "over" (the source), first color for "mix". Any CSS format.' },
+      background: { type: 'string', required: true, description: 'Backdrop for "over", second color for "mix". Any CSS format.' },
+      mode: {
+        type: 'string',
+        enum: ['over', 'mix'],
+        description: 'Blend mode: "over" (default) = alpha compositing with the first color on top, "mix" = premultiplied interpolation.',
+      },
+      weight: {
+        type: 'number',
+        description: 'For "mix" only: weight of the background color, 0–1 (default 0.5). Ignored by "over".',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          foreground: { type: 'string', required: true },
+          background: { type: 'string', required: true },
+          mode: { type: 'string', required: true },
+          weight: { type: 'number' },
+          hex: { type: 'string' },
+          rgb: { type: 'string' },
+          hsl: { type: 'string' },
+          alpha: { type: 'number' },
+        },
+      },
+      render: (_args: { foreground: string; background: string; mode?: string; weight?: number }, value: unknown) => {
+        const result = value as BlendResult
+        if (!result.ok) return [{ type: 'text', text: `blend_colors: ${result.error ?? 'invalid color'}` }]
+        const head = result.mode === 'mix'
+          ? `${result.foreground} mix ${result.weight ?? 0.5} ${result.background} =`
+          : `${result.foreground} over ${result.background} =`
+        const parts = [head]
+        if (result.hex !== undefined) parts.push(result.hex)
+        if (result.rgb !== undefined) parts.push(result.rgb)
+        if (result.hsl !== undefined) parts.push(result.hsl)
+        if (result.alpha !== undefined && result.alpha < 1) parts.push(`alpha ${result.alpha}`)
+        return [{ type: 'text', text: parts.join(' ') }]
+      },
+    },
+    async execute(args: { foreground: string; background: string; mode?: string; weight?: number }): Promise<BlendResult> {
+      // The enum is validated at the schema layer; the guard covers direct calls.
+      const mode: BlendMode = BLEND_MODES.includes(args.mode as BlendMode) ? (args.mode as BlendMode) : 'over'
+      const weight = typeof args.weight === 'number' ? Math.min(1, Math.max(0, args.weight)) : 0.5
+      const top = parseColorInput(args.foreground, lookupNamed)
+      if (!top.ok) return { foreground: args.foreground, background: args.background, mode, ok: false, error: `foreground: ${top.error}` }
+      const bottom = parseColorInput(args.background, lookupNamed)
+      if (!bottom.ok) return { foreground: args.foreground, background: args.background, mode, ok: false, error: `background: ${bottom.error}` }
+
+      const blended = mode === 'mix'
+        ? blendMix(top.color.rgba, bottom.color.rgba, weight)
+        : blendOver(top.color.rgba, bottom.color.rgba)
+      const result: BlendResult = {
+        foreground: args.foreground,
+        background: args.background,
+        mode,
+        ok: true,
+        hex: rgbaToHex(blended),
+        rgb: rgbaToRgbString(blended),
+        hsl: rgbaToHslString(blended),
+        alpha: round(blended.a, 3),
+      }
+      if (mode === 'mix') result.weight = weight
+      return result
+    },
+  })
+
+  const ensure_contrast = defineTool({
+    name: 'ensure_contrast',
+    description: 'Make text readable: return the color closest to the given foreground that reaches a WCAG contrast '
+      + 'target on the given background. Hue and saturation are kept and only lightness moves, toward black or white '
+      + '(auto-picked by which direction can gain the most contrast). Reports the ratio before and after and how far '
+      + 'lightness had to move. When the target is impossible on that background, it says so and gives the best '
+      + 'achievable ratio instead of guessing. Pure local math, read-only.',
+    parameters: {
+      foreground: { type: 'string', required: true, description: 'The text color to fix, in any supported CSS format.' },
+      background: { type: 'string', required: true, description: 'The background it sits on, in any supported CSS format.' },
+      level: {
+        type: 'string',
+        enum: ['AA', 'AAA'],
+        description: 'WCAG level to reach: AA (default) = 4.5:1, AAA = 7:1; large text lowers both to 3:1 / 4.5:1.',
+      },
+      largeText: { type: 'boolean', description: 'Set true for large text (≥18pt, or ≥14pt bold), which requires less contrast.' },
+      direction: {
+        type: 'string',
+        enum: ['auto', 'darken', 'lighten'],
+        description: 'Which way to move lightness: "auto" (default) picks the direction with the higher achievable contrast.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          foreground: { type: 'string', required: true },
+          background: { type: 'string', required: true },
+          level: { type: 'string', required: true },
+          largeText: { type: 'boolean', required: true },
+          target: { type: 'number', required: true },
+          direction: { type: 'string', required: true },
+          inputRatio: { type: 'number' },
+          changed: { type: 'boolean' },
+          hex: { type: 'string' },
+          rgb: { type: 'string' },
+          hsl: { type: 'string' },
+          ratio: { type: 'number' },
+          lightnessShift: { type: 'number' },
+          bestHex: { type: 'string' },
+          bestRatio: { type: 'number' },
+        },
+      },
+      render: (
+        _args: { foreground: string; background: string; level?: string; largeText?: boolean; direction?: string },
+        value: unknown,
+      ) => {
+        const result = value as EnsureContrastResult
+        if (result.hex === undefined && result.bestHex === undefined) {
+          return [{ type: 'text', text: `ensure_contrast: ${result.error ?? 'invalid color'}` }]
+        }
+        const head = `${result.foreground} on ${result.background} (${result.level}${result.largeText ? ' large' : ''} ${result.target}:1)`
+        if (result.bestHex !== undefined) {
+          return [{
+            type: 'text',
+            text: `${head}: ${result.error ?? 'target unreachable'} — best ${result.bestHex} at ${result.bestRatio ?? 0}:1`,
+          }]
+        }
+        if (result.changed === false) {
+          return [{ type: 'text', text: `${head}: ${result.hex} already reaches ${result.ratio ?? 0}:1, no change needed` }]
+        }
+        return [{
+          type: 'text',
+          text: `${head}: ${result.hex} reaches ${result.ratio ?? 0}:1 (${result.direction} ${round(result.lightnessShift ?? 0, 1)}pp)`,
+        }]
+      },
+    },
+    async execute(args: {
+      foreground: string
+      background: string
+      level?: string
+      largeText?: boolean
+      direction?: string
+    }): Promise<EnsureContrastResult> {
+      const level = args.level === 'AAA' ? 'AAA' : 'AA'
+      const largeText = args.largeText === true
+      const direction: ContrastDirection = CONTRAST_DIRECTIONS.includes(args.direction as ContrastDirection)
+        ? (args.direction as ContrastDirection)
+        : 'auto'
+      const target = level === 'AAA' ? (largeText ? 4.5 : 7) : (largeText ? 3 : 4.5)
+      const base: EnsureContrastResult = {
+        ok: false,
+        foreground: args.foreground,
+        background: args.background,
+        level,
+        largeText,
+        target,
+        direction: direction === 'auto' ? 'auto' : direction,
+      }
+
+      const text = parseColorInput(args.foreground, lookupNamed)
+      if (!text.ok) return { ...base, error: `foreground: ${text.error}` }
+      const plate = parseColorInput(args.background, lookupNamed)
+      if (!plate.ok) return { ...base, error: `background: ${plate.error}` }
+
+      const fix = ensureContrast(text.color.rgba, plate.color.rgba, target, direction)
+      base.direction = fix.direction
+      base.inputRatio = round(contrastRatio(text.color.rgba, plate.color.rgba), 2)
+
+      if (!fix.ok) {
+        const best = fix.bestRgba ?? plate.color.rgba
+        return {
+          ...base,
+          error: `target ${target}:1 unreachable on ${args.background} — best ${round(fix.bestRatio ?? 1, 2)}:1 by ${fix.direction}`,
+          bestHex: rgbaToHex(best),
+          bestRatio: round(fix.bestRatio ?? 1, 2),
+        }
+      }
+
+      const fixed = fix.rgba ?? text.color.rgba
+      return {
+        ...base,
+        ok: true,
+        changed: fix.changed,
+        hex: rgbaToHex(fixed),
+        rgb: rgbaToRgbString(fixed),
+        hsl: rgbaToHslString(fixed),
+        ratio: round(fix.ratio ?? base.inputRatio ?? 1, 2),
+        lightnessShift: round(fix.lightnessShift ?? 0, 2),
+      }
+    },
+  })
+
+  return { convert_color, contrast_ratio, color_info, color_scheme, adjust_color, blend_colors, ensure_contrast }
 }

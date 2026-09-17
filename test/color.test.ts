@@ -41,6 +41,24 @@ describe('parseColorInput', () => {
     expect(parse('rgb(300, 0, 0)')).toEqual({ r: 255, g: 0, b: 0, a: 1 }) // clamped
   })
 
+  // R42 regression. The old parser multiplied every bare rgb() channel by 255,
+  // which is invisible for 0/255 and catastrophic in between: rgb(51, 102, 153)
+  // used to come back as #ffffff. Percentages stay shares of 255.
+  it('keeps mid-range rgb() numbers on the 0–255 scale', () => {
+    expect(parse('rgb(51, 102, 153)')).toEqual({ r: 51, g: 102, b: 153, a: 1 })
+    expect(parse('rgb(0 128 0)')).toEqual({ r: 0, g: 128, b: 0, a: 1 })
+    expect(parse('rgba(18, 52, 86, 0.25)')).toEqual({ r: 18, g: 52, b: 86, a: 0.25 })
+    expect(parse('rgb(20%, 40%, 60%)')).toEqual({ r: 51, g: 102, b: 153, a: 1 })
+  })
+
+  // R42 regression: CSS Color 4 reads a bare number in s/l/w/b exactly like a
+  // percentage, so hsl(210 100 50) must equal hsl(210, 100%, 50%).
+  it('treats bare numbers in hsl()/hwb() as percentages', () => {
+    expect(parse('hsl(120 100 25)')).toEqual(parse('hsl(120, 100%, 25%)'))
+    expect(parse('hsl(210 100 50)')).toEqual(parse('hsl(210, 100%, 50%)'))
+    expect(parse('hwb(0 40 40)')).toEqual(parse('hwb(0 40% 40%)'))
+  })
+
   it('parses hsl() with angle units', () => {
     expect(parse('hsl(0, 100%, 50%)')).toEqual({ r: 255, g: 0, b: 0, a: 1 })
     expect(parse('hsl(120deg, 100%, 25%)')).toEqual({ r: 0, g: 127.5, b: 0, a: 1 })

@@ -27,6 +27,30 @@ function parseChannel(token) {
         return value / 100;
     return value;
 }
+/**
+ * rgb() channel: a percentage is a share of 255 (`50%` → 127.5) while a bare
+ * number is already on the 0–255 scale, because CSS Color 4 lets `rgb(51 102 153)`
+ * mean #336699. The two scales must not be confused: multiplying a bare number
+ * by 255 turned every mid-range `rgb(...)` input into pure 255 (fixed in R42 —
+ * the old tests only ever used 0 and 255 channels, where clamping hid it).
+ */
+function parseRgbChannel(token) {
+    const value = parseChannel(token);
+    if (value === undefined)
+        return undefined;
+    return token.trim().endsWith('%') ? value * 255 : value;
+}
+/**
+ * hsl()/hwb() percentage channel as a 0–1 fraction: `50%` and the bare number
+ * `50` both mean 50% (CSS Color 4 interprets a number in s/l/w/b exactly like a
+ * percentage), so `hsl(210 100 50)` is the same as `hsl(210, 100%, 50%)`.
+ */
+function parsePercentChannel(token) {
+    const value = parseChannel(token);
+    if (value === undefined)
+        return undefined;
+    return token.trim().endsWith('%') ? value : value / 100;
+}
 /** Parse an angle token into degrees (deg | rad | grad | turn | unitless). */
 function parseAngle(token) {
     const trimmed = token.trim();
@@ -109,21 +133,21 @@ export function parseFunctional(input) {
         return undefined;
     const alpha = alphaText ?? legacyAlpha;
     if (kind === 'rgb') {
-        const r = parseChannel(tokens[0] ?? '');
-        const g = parseChannel(tokens[1] ?? '');
-        const b = parseChannel(tokens[2] ?? '');
+        const r = parseRgbChannel(tokens[0] ?? '');
+        const g = parseRgbChannel(tokens[1] ?? '');
+        const b = parseRgbChannel(tokens[2] ?? '');
         if (r === undefined || g === undefined || b === undefined)
             return undefined;
         return {
-            r: clamp(r * 255, 0, 255),
-            g: clamp(g * 255, 0, 255),
-            b: clamp(b * 255, 0, 255),
+            r: clamp(r, 0, 255),
+            g: clamp(g, 0, 255),
+            b: clamp(b, 0, 255),
             a: parseAlpha(alpha),
         };
     }
     const h = parseAngle(tokens[0] ?? '');
-    const s = parseChannel(tokens[1] ?? '');
-    const l = parseChannel(tokens[2] ?? '');
+    const s = parsePercentChannel(tokens[1] ?? '');
+    const l = parsePercentChannel(tokens[2] ?? '');
     if (h === undefined || s === undefined || l === undefined)
         return undefined;
     if (kind === 'hsl') {
@@ -132,8 +156,8 @@ export function parseFunctional(input) {
     }
     // hwb: w and b are fractions of 0–100% (CSS requires percentages, but bare
     // numbers are accepted leniently and treated as percentages).
-    const w = parseChannel(tokens[1] ?? '');
-    const b = parseChannel(tokens[2] ?? '');
+    const w = parsePercentChannel(tokens[1] ?? '');
+    const b = parsePercentChannel(tokens[2] ?? '');
     if (w === undefined || b === undefined)
         return undefined;
     const rgb = hwbToRgb(normalizeHue(h), clamp(w, 0, 1), clamp(b, 0, 1));
@@ -385,6 +409,143 @@ export function adjustHsl(h, s, l, op, amount) {
 export function round(value, digits) {
     const factor = Math.pow(10, digits);
     return Math.round(value * factor) / factor;
+}
+/** Canonical blend-mode list (drives the tool enum). */
+export const BLEND_MODES = ['over', 'mix'];
+/**
+ * Composite `source` over `backdrop` — Porter-Duff source-over with
+ * non-premultiplied channels in and out (CSS Compositing and Blending §9.1).
+ * This is what a browser paints for a translucent overlay on a solid backdrop.
+ */
+export function blendOver(source, backdrop) {
+    const alpha = source.a + backdrop.a * (1 - source.a);
+    if (alpha === 0)
+        return { r: 0, g: 0, b: 0, a: 0 };
+    const channel = (s, b) => (s * source.a + b * backdrop.a * (1 - source.a)) / alpha;
+    return {
+        r: channel(source.r, backdrop.r),
+        g: channel(source.g, backdrop.g),
+        b: channel(source.b, backdrop.b),
+        a: alpha,
+    };
+}
+/**
+ * Premultiplied sRGB interpolation: `weight` is the weight of `second` in
+ * [0, 1], so `first` carries the remaining 1 − weight. Identical to CSS
+ * `color-mix(in srgb, first, second <weight × 100>%)`, alpha included: the
+ * interpolation happens on premultiplied channels and is divided back out.
+ */
+export function blendMix(first, second, weight) {
+    const w2 = clamp(weight, 0, 1);
+    const w1 = 1 - w2;
+    const alpha = first.a * w1 + second.a * w2;
+    if (alpha === 0)
+        return { r: 0, g: 0, b: 0, a: 0 };
+    const channel = (c1, c2) => (c1 * first.a * w1 + c2 * second.a * w2) / alpha;
+    return {
+        r: channel(first.r, second.r),
+        g: channel(first.g, second.g),
+        b: channel(first.b, second.b),
+        a: alpha,
+    };
+}
+/** Canonical direction list (drives the tool enum). */
+export const CONTRAST_DIRECTIONS = ['auto', 'darken', 'lighten'];
+/** Lightness scan resolution of ensureContrast (1/1000 of the trip to the extreme). */
+const CONTRAST_SCAN_STEPS = 1000;
+/** Bisection count used to shave the scan's last step down. */
+const CONTRAST_REFINE_STEPS = 20;
+const BLACK = { r: 0, g: 0, b: 0, a: 1 };
+const WHITE = { r: 255, g: 255, b: 255, a: 1 };
+/** 8-bit serialization of a float channel — the color a renderer actually shows. */
+function serializeChannel(value) {
+    return clamp(roundChannel(value), 0, 255);
+}
+/**
+ * Move `foreground` toward black or white until it reaches `target` WCAG
+ * contrast on `background`, preserving hue and saturation. Deterministic and
+ * reproducible by design:
+ *
+ *  1. `direction` 'auto' picks the extreme (black or white) with the higher
+ *     contrast against the background; ties resolve to 'darken'.
+ *  2. Scan 1000 lightness steps from the input toward that extreme and take the
+ *     first step whose **8-bit rounded** color passes — rounding happens before
+ *     the test, so what passes is what the user will literally see.
+ *  3. Bisect the bracketing interval 20 times so the color moves as little as
+ *     possible (only ever shrinking toward a color already known to pass).
+ *
+ * Returns `changed: false` when the input already passes, and
+ * `ok: false` plus the best achievable color when the target is out of reach on
+ * that background (e.g. AAA on mid-gray, where even black scores ~5.3).
+ */
+export function ensureContrast(foreground, background, target, direction = 'auto') {
+    const base = contrastRatio(foreground, background);
+    const resolved = direction === 'auto'
+        ? (contrastRatio(WHITE, background) > contrastRatio(BLACK, background) ? 'lighten' : 'darken')
+        : direction;
+    if (base >= target) {
+        return {
+            ok: true,
+            changed: false,
+            direction: resolved,
+            rgba: foreground,
+            ratio: base,
+            lightnessShift: 0,
+        };
+    }
+    const { h, s, l } = rgbToHsl(foreground.r, foreground.g, foreground.b);
+    const extreme = resolved === 'darken' ? 0 : 1;
+    const at = (t) => {
+        const rgb = hslToRgb(h, s, l + (extreme - l) * t);
+        return {
+            r: serializeChannel(rgb.r),
+            g: serializeChannel(rgb.g),
+            b: serializeChannel(rgb.b),
+            a: foreground.a,
+        };
+    };
+    let low = 0;
+    let high = 0;
+    let passing;
+    for (let i = 1; i <= CONTRAST_SCAN_STEPS; i += 1) {
+        const t = i / CONTRAST_SCAN_STEPS;
+        const candidate = at(t);
+        if (contrastRatio(candidate, background) >= target) {
+            low = (i - 1) / CONTRAST_SCAN_STEPS;
+            high = t;
+            passing = candidate;
+            break;
+        }
+    }
+    if (passing === undefined) {
+        const best = at(1);
+        return {
+            ok: false,
+            changed: false,
+            direction: resolved,
+            bestRgba: best,
+            bestRatio: contrastRatio(best, background),
+        };
+    }
+    for (let i = 0; i < CONTRAST_REFINE_STEPS; i += 1) {
+        const mid = (low + high) / 2;
+        const candidate = at(mid);
+        if (contrastRatio(candidate, background) >= target) {
+            high = mid;
+            passing = candidate;
+        }
+        else {
+            low = mid;
+        }
+    }
+    return {
+        ok: true,
+        changed: true,
+        direction: resolved,
+        rgba: passing,
+        ratio: contrastRatio(passing, background),
+        lightnessShift: (extreme - l) * high * 100,
+    };
 }
 /** Convenience: parse a user color string, resolving named colors first. */
 export function parseColorInput(input, namedLookup) {

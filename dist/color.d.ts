@@ -121,6 +121,64 @@ export declare function adjustHsl(h: number, s: number, l: number, op: AdjustOp,
 };
 /** Round to `digits` decimals, trimming trailing zeros. */
 export declare function round(value: number, digits: number): number;
+/** The two blending modes blend_colors supports. */
+export type BlendMode = 'over' | 'mix';
+/** Canonical blend-mode list (drives the tool enum). */
+export declare const BLEND_MODES: readonly BlendMode[];
+/**
+ * Composite `source` over `backdrop` — Porter-Duff source-over with
+ * non-premultiplied channels in and out (CSS Compositing and Blending §9.1).
+ * This is what a browser paints for a translucent overlay on a solid backdrop.
+ */
+export declare function blendOver(source: Rgba, backdrop: Rgba): Rgba;
+/**
+ * Premultiplied sRGB interpolation: `weight` is the weight of `second` in
+ * [0, 1], so `first` carries the remaining 1 − weight. Identical to CSS
+ * `color-mix(in srgb, first, second <weight × 100>%)`, alpha included: the
+ * interpolation happens on premultiplied channels and is divided back out.
+ */
+export declare function blendMix(first: Rgba, second: Rgba, weight: number): Rgba;
+/** Direction to move a foreground color while repairing contrast. */
+export type ContrastDirection = 'auto' | 'darken' | 'lighten';
+/** Canonical direction list (drives the tool enum). */
+export declare const CONTRAST_DIRECTIONS: readonly ContrastDirection[];
+/** Outcome of ensureContrast: either a passing color or the best achievable one. */
+export interface ContrastFix {
+    /** True when a color reaching `target` was found. */
+    ok: boolean;
+    /** True when the returned color differs from the input (lightness moved). */
+    changed: boolean;
+    /** The direction actually used (never 'auto'). */
+    direction: 'darken' | 'lighten';
+    /** The color that reaches the target (present when ok). */
+    rgba?: Rgba;
+    /** Contrast ratio of `rgba` against the background (present when ok). */
+    ratio?: number;
+    /** Signed lightness change in percentage points (present when ok). */
+    lightnessShift?: number;
+    /** Best color found when the target is unreachable (present when not ok). */
+    bestRgba?: Rgba;
+    /** Contrast ratio of `bestRgba` (present when not ok). */
+    bestRatio?: number;
+}
+/**
+ * Move `foreground` toward black or white until it reaches `target` WCAG
+ * contrast on `background`, preserving hue and saturation. Deterministic and
+ * reproducible by design:
+ *
+ *  1. `direction` 'auto' picks the extreme (black or white) with the higher
+ *     contrast against the background; ties resolve to 'darken'.
+ *  2. Scan 1000 lightness steps from the input toward that extreme and take the
+ *     first step whose **8-bit rounded** color passes — rounding happens before
+ *     the test, so what passes is what the user will literally see.
+ *  3. Bisect the bracketing interval 20 times so the color moves as little as
+ *     possible (only ever shrinking toward a color already known to pass).
+ *
+ * Returns `changed: false` when the input already passes, and
+ * `ok: false` plus the best achievable color when the target is out of reach on
+ * that background (e.g. AAA on mid-gray, where even black scores ~5.3).
+ */
+export declare function ensureContrast(foreground: Rgba, background: Rgba, target: number, direction?: ContrastDirection): ContrastFix;
 /** Convenience: parse a user color string, resolving named colors first. */
 export declare function parseColorInput(input: string, namedLookup: (name: string) => string | undefined): ParseResult;
 //# sourceMappingURL=color.d.ts.map

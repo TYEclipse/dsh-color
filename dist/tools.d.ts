@@ -12,6 +12,8 @@ export interface ToolSet {
     color_info: ToolDefinition;
     color_scheme: ToolDefinition;
     adjust_color: ToolDefinition;
+    blend_colors: ToolDefinition;
+    ensure_contrast: ToolDefinition;
 }
 /** Result of convert_color, kept flat and JsonValue-safe. */
 export interface ConvertResult {
@@ -80,6 +82,39 @@ export interface AdjustResult {
     hex?: string;
     rgb?: string;
     hsl?: string;
+}
+/** Result of blend_colors. */
+export interface BlendResult {
+    ok: boolean;
+    error?: string;
+    foreground: string;
+    background: string;
+    mode: string;
+    weight?: number;
+    hex?: string;
+    rgb?: string;
+    hsl?: string;
+    alpha?: number;
+}
+/** Result of ensure_contrast. */
+export interface EnsureContrastResult {
+    ok: boolean;
+    error?: string;
+    foreground: string;
+    background: string;
+    level: string;
+    largeText: boolean;
+    target: number;
+    direction: string;
+    inputRatio?: number;
+    changed?: boolean;
+    hex?: string;
+    rgb?: string;
+    hsl?: string;
+    ratio?: number;
+    lightnessShift?: number;
+    bestHex?: string;
+    bestRatio?: number;
 }
 /** Build all three tool definitions. */
 export declare function buildColorTools(): ToolSet;
