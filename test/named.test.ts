@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { lookupNamed, NAMED_COLORS, namesByHex, searchNamed } from '../src/named.ts'
 
+/**
+ * ORACLE: test/oracle/anchors.py
+ * Every numeric expectation in this file is printed by the in-repo oracle (an
+ * independent Python implementation of the browser/WCAG/CSS rules; its `--check`
+ * replays the published reference data). Never hand-edit an expectation: re-run
+ * `python3 test/oracle/anchors.py` and copy the printed value.
+ */
+
 describe('NAMED_COLORS table', () => {
   it('has the full CSS Color 4 set (148 entries)', () => {
     expect(Object.keys(NAMED_COLORS).length).toBe(148)

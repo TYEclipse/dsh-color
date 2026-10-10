@@ -121,6 +121,13 @@ export declare function adjustHsl(h: number, s: number, l: number, op: AdjustOp,
 };
 /** Round to `digits` decimals, trimming trailing zeros. */
 export declare function round(value: number, digits: number): number;
+/**
+ * Round for output while folding `-0` into `0`. JSON stringifies both as "0",
+ * so a strict deep-equality round-trip gate (which is what dsh-tools applies to
+ * tool output) reads `-0` as lossy — and rounding a tiny negative Lab channel
+ * such as −4e-5 to 4 decimals lands on exactly `-0`.
+ */
+export declare function roundOut(value: number, digits: number): number;
 /** The two blending modes blend_colors supports. */
 export type BlendMode = 'over' | 'mix';
 /** Canonical blend-mode list (drives the tool enum). */
@@ -179,6 +186,91 @@ export interface ContrastFix {
  * that background (e.g. AAA on mid-gray, where even black scores ~5.3).
  */
 export declare function ensureContrast(foreground: Rgba, background: Rgba, target: number, direction?: ContrastDirection): ContrastFix;
+/** A Lab-style triplet: lightness plus two opponent-color axes. */
+export interface LabColor {
+    l: number;
+    a: number;
+    b: number;
+}
+/** A 3×3 matrix as three row tuples. */
+type Mat3 = readonly [readonly [number, number, number], readonly [number, number, number], readonly [number, number, number]];
+/** Multiply two 3×3 matrices (a · b). */
+export declare function multiplyMat3(a: Mat3, b: Mat3): Mat3;
+/**
+ * Invert a 3×3 matrix (adjugate / determinant). The Oklab matrices are
+ * published in the forward direction only, so the inverse direction is derived
+ * here rather than typed in from a second, differently rounded source.
+ */
+export declare function invertMat3(m: Mat3): Mat3;
+/** sRGB gamma encoding: one channel in [0, 1] (linear) → [0, 255]. */
+export declare function linearToSrgbChannel(value: number): number;
+/** sRGB gamma decoding: one channel in [0, 255] → [0, 1] (linear). */
+export declare function srgbToLinearChannel(value: number): number;
+/** RGBA (sRGB, alpha ignored) → CIE XYZ with the D65 white point. */
+export declare function rgbaToXyz(rgba: Rgba): [number, number, number];
+/** CIE XYZ (D65) → CIELAB, L in [0, 100], a/b unbounded. */
+export declare function xyzToLab(xyz: readonly [number, number, number]): LabColor;
+/** CIELAB → CIE XYZ (D65). Inverse of {@link xyzToLab}. */
+export declare function labToXyz(lab: LabColor): [number, number, number];
+/** RGBA (sRGB) → CIELAB under the D65 white point (alpha ignored). */
+export declare function rgbaToLab(rgba: Rgba): LabColor;
+/** CIELAB → RGBA, channels clamped into the sRGB gamut and alpha passed through. */
+export declare function labToRgba(lab: LabColor, alpha?: number): Rgba;
+/** RGBA (sRGB) → Oklab (D65, L in [0, 1]). */
+export declare function rgbaToOklab(rgba: Rgba): LabColor;
+/** Oklab → RGBA, out-of-gamut results clamped to sRGB, alpha passed through. */
+export declare function oklabToRgba(lab: LabColor, alpha?: number): Rgba;
+/** CIE76 color difference: plain Euclidean distance in CIELAB. */
+export declare function deltaE76(first: LabColor, second: LabColor): number;
+/**
+ * CIEDE2000 color difference (CIE 2000, kL = kC = kH = 1), the industry
+ * standard for "how different do these two colors look". The implementation
+ * follows Sharma, Wu & Dalal (2005) including the two hue-average special
+ * cases (zero chroma and hue pairs more than 180° apart); the oracle replays
+ * their published 34-pair reference table on every run.
+ */
+export declare function deltaE2000(first: LabColor, second: LabColor): number;
+/** How different two colors look, as a word (ΔE00 bands, plain-language). */
+export type DifferenceVerdict = 'identical' | 'barely-perceptible' | 'perceptible' | 'different' | 'very-different';
+/** Canonical verdict list (drives nothing but documentation and tests). */
+export declare const DIFFERENCE_VERDICTS: readonly DifferenceVerdict[];
+/**
+ * Map a ΔE00 value onto a verdict. Bands follow the widely used reading of
+ * ΔE00: ≤1 is not perceptible, ≤2 is perceptible only on close inspection,
+ * ≤10 is obvious at a glance, and past ~50 the colors read as opposites.
+ */
+export declare function differenceVerdict(delta: number): DifferenceVerdict;
+/** The four ramp shapes color_scale can build. */
+export type ScaleMode = 'tints' | 'shades' | 'both' | 'between';
+/** Canonical ramp list (drives the tool enum). */
+export declare const SCALE_MODES: readonly ScaleMode[];
+/** Interpolation space: perceptual (Oklab) or plain sRGB channels. */
+export type ScaleSpace = 'oklab' | 'srgb';
+/** Canonical space list (drives the tool enum). */
+export declare const SCALE_SPACES: readonly ScaleSpace[];
+/** Ramp length bounds enforced by color_scale. */
+export declare const SCALE_MIN_STEPS = 2;
+/** Ramp length upper bound enforced by color_scale. */
+export declare const SCALE_MAX_STEPS = 11;
+/** Mix `second` into `first` with the given weight in the requested space. */
+export declare function scaleMix(first: Rgba, second: Rgba, weight: number, space: ScaleSpace): Rgba;
+/**
+ * Build the ramp between a base color and (depending on `mode`) white, black,
+ * both, or a second color.
+ *
+ *  - `tints`   — base → white, `steps` colors, base first
+ *  - `shades`  — base → black, base first
+ *  - `both`    — black → base → white, evenly weighted, base in the middle
+ *                when `steps` is odd (an even count simply has no exact base)
+ *  - `between` — base → `target`, evenly spaced
+ *
+ * With `space = 'oklab'` the endpoints are interpolated in Oklab, so the steps
+ * are evenly spaced in perceived color rather than in sRGB channel values; any
+ * step that falls outside the sRGB gamut is clamped back into it. Alpha is
+ * interpolated linearly in both spaces.
+ */
+export declare function colorScale(base: Rgba, target: Rgba | undefined, mode: ScaleMode, steps: number, space: ScaleSpace): Rgba[];
 /** Convenience: parse a user color string, resolving named colors first. */
 export declare function parseColorInput(input: string, namedLookup: (name: string) => string | undefined): ParseResult;
+export {};
 //# sourceMappingURL=color.d.ts.map

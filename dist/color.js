@@ -410,6 +410,16 @@ export function round(value, digits) {
     const factor = Math.pow(10, digits);
     return Math.round(value * factor) / factor;
 }
+/**
+ * Round for output while folding `-0` into `0`. JSON stringifies both as "0",
+ * so a strict deep-equality round-trip gate (which is what dsh-tools applies to
+ * tool output) reads `-0` as lossy — and rounding a tiny negative Lab channel
+ * such as −4e-5 to 4 decimals lands on exactly `-0`.
+ */
+export function roundOut(value, digits) {
+    const rounded = round(value, digits);
+    return rounded === 0 ? 0 : rounded;
+}
 /** Canonical blend-mode list (drives the tool enum). */
 export const BLEND_MODES = ['over', 'mix'];
 /**
@@ -546,6 +556,338 @@ export function ensureContrast(foreground, background, target, direction = 'auto
         ratio: contrastRatio(passing, background),
         lightnessShift: (extreme - l) * high * 100,
     };
+}
+/**
+ * D65 reference white, derived from its 4-figure CIE chromaticity coordinates
+ * (x = 0.3127, y = 0.3290) exactly the way CSS Color 4 defines it. Deriving it
+ * from the chromaticities instead of hard-coding a rounded triplet keeps the
+ * white point consistent with the sRGB→XYZ matrix below: white must land on
+ * a = b = 0 exactly (the oracle checks that invariant on every run).
+ */
+const D65_WHITE = [
+    0.3127 / 0.3290,
+    1,
+    (1 - 0.3127 - 0.3290) / 0.3290,
+];
+/** CIE Lab constants as the exact rationals CIE 15 / CSS Color 4 use. */
+const LAB_EPSILON = 216 / 24389;
+const LAB_KAPPA = 24389 / 27;
+function applyMatrix(m, v) {
+    return [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ];
+}
+/** Multiply two 3×3 matrices (a · b). */
+export function multiplyMat3(a, b) {
+    const [b00, b01, b02] = b[0];
+    const [b10, b11, b12] = b[1];
+    const [b20, b21, b22] = b[2];
+    const row = (r) => [
+        r[0] * b00 + r[1] * b10 + r[2] * b20,
+        r[0] * b01 + r[1] * b11 + r[2] * b21,
+        r[0] * b02 + r[1] * b12 + r[2] * b22,
+    ];
+    return [row(a[0]), row(a[1]), row(a[2])];
+}
+/**
+ * Invert a 3×3 matrix (adjugate / determinant). The Oklab matrices are
+ * published in the forward direction only, so the inverse direction is derived
+ * here rather than typed in from a second, differently rounded source.
+ */
+export function invertMat3(m) {
+    const [a, b, c] = m[0];
+    const [d, e, f] = m[1];
+    const [g, h, i] = m[2];
+    const A = e * i - f * h;
+    const B = -(d * i - f * g);
+    const C = d * h - e * g;
+    const D = -(b * i - c * h);
+    const E = a * i - c * g;
+    const F = -(a * h - b * g);
+    const G = b * f - c * e;
+    const H = -(a * f - c * d);
+    const I = a * e - b * d;
+    const det = a * A + b * B + c * C;
+    return [
+        [A / det, D / det, G / det],
+        [B / det, E / det, H / det],
+        [C / det, F / det, I / det],
+    ];
+}
+/** linear-light sRGB (D65, white = Y 1) → CIE XYZ — rational form, CSS Color 4 §8. */
+const LINEAR_SRGB_TO_XYZ = [
+    [506752 / 1228815, 87881 / 245763, 12673 / 70218],
+    [87098 / 409605, 175762 / 245763, 12673 / 175545],
+    [7918 / 409605, 87881 / 737289, 1001167 / 1053270],
+];
+/** CIE XYZ → linear-light sRGB — rational form, CSS Color 4 §8. */
+const XYZ_TO_LINEAR_SRGB = [
+    [12831 / 3959, -329 / 214, -1974 / 3959],
+    [-851781 / 878810, 1648619 / 878810, 36519 / 878810],
+    [705 / 12673, -2585 / 12673, 705 / 667],
+];
+/**
+ * CIE XYZ (D65, Y = 1 for white) → cone responses (Oklab M₁). These are the
+ * 2021-recalculated 64-bit constants from CSS Color 4 §13, which pair exactly
+ * with the rational sRGB→XYZ matrix above: white lands on Oklab (1, 0, 0) to
+ * machine precision (the oracle asserts it). Ottosson's original constants are
+ * rounded differently and drift ~1e-4 from the modern sRGB white.
+ */
+const XYZ_TO_LMS = [
+    [0.8190224379967030, 0.3619062600528904, -0.1288737815209879],
+    [0.0329836539323885, 0.9292868615863434, 0.0361446663506424],
+    [0.0481771893596242, 0.2642395317527308, 0.6335478284694309],
+];
+/** Cone responses → Oklab (Oklab M₂, 64-bit CSS Color 4 form). */
+const LMS_TO_OKLAB = [
+    [0.2104542683093140, 0.7936177747023054, -0.0040720430116193],
+    [1.9779985324311684, -2.4285922420485799, 0.4505937096174110],
+    [0.0259040424655478, 0.7827717124575296, -0.8086757549230774],
+];
+/** Inverse of the published M₂ (derived, not typed in). */
+const OKLAB_TO_LMS = invertMat3(LMS_TO_OKLAB);
+/** Inverse of the published M₁ (derived, not typed in). */
+const LMS_TO_XYZ = invertMat3(XYZ_TO_LMS);
+/** Oklab → linear-light sRGB, composed once from the two published halves. */
+const OKLAB_TO_LINEAR_SRGB = multiplyMat3(XYZ_TO_LINEAR_SRGB, LMS_TO_XYZ);
+/** sRGB gamma encoding: one channel in [0, 1] (linear) → [0, 255]. */
+export function linearToSrgbChannel(value) {
+    const sign = value < 0 ? -1 : 1;
+    const abs = Math.abs(value);
+    const encoded = abs > 0.0031308 ? sign * (1.055 * Math.pow(abs, 1 / 2.4) - 0.055) : 12.92 * value;
+    return encoded * 255;
+}
+/** sRGB gamma decoding: one channel in [0, 255] → [0, 1] (linear). */
+export function srgbToLinearChannel(value) {
+    const c = value / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+/** RGBA (sRGB, alpha ignored) → CIE XYZ with the D65 white point. */
+export function rgbaToXyz(rgba) {
+    return applyMatrix(LINEAR_SRGB_TO_XYZ, [
+        srgbToLinearChannel(rgba.r),
+        srgbToLinearChannel(rgba.g),
+        srgbToLinearChannel(rgba.b),
+    ]);
+}
+/** CIE XYZ (D65) → CIELAB, L in [0, 100], a/b unbounded. */
+export function xyzToLab(xyz) {
+    const f = (value, white) => {
+        const t = value / white;
+        return t > LAB_EPSILON ? Math.cbrt(t) : (LAB_KAPPA * t + 16) / 116;
+    };
+    const fx = f(xyz[0], D65_WHITE[0]);
+    const fy = f(xyz[1], D65_WHITE[1]);
+    const fz = f(xyz[2], D65_WHITE[2]);
+    return { l: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+}
+/** CIELAB → CIE XYZ (D65). Inverse of {@link xyzToLab}. */
+export function labToXyz(lab) {
+    const fy = (lab.l + 16) / 116;
+    const fx = fy + lab.a / 500;
+    const fz = fy - lab.b / 200;
+    const back = (f) => {
+        const cube = f * f * f;
+        return cube > LAB_EPSILON ? cube : (116 * f - 16) / LAB_KAPPA;
+    };
+    return [back(fx) * D65_WHITE[0], back(fy) * D65_WHITE[1], back(fz) * D65_WHITE[2]];
+}
+/** RGBA (sRGB) → CIELAB under the D65 white point (alpha ignored). */
+export function rgbaToLab(rgba) {
+    return xyzToLab(rgbaToXyz(rgba));
+}
+/** CIELAB → RGBA, channels clamped into the sRGB gamut and alpha passed through. */
+export function labToRgba(lab, alpha = 1) {
+    const linear = applyMatrix(XYZ_TO_LINEAR_SRGB, labToXyz(lab));
+    return {
+        r: clamp(linearToSrgbChannel(linear[0]), 0, 255),
+        g: clamp(linearToSrgbChannel(linear[1]), 0, 255),
+        b: clamp(linearToSrgbChannel(linear[2]), 0, 255),
+        a: alpha,
+    };
+}
+/** RGBA (sRGB) → Oklab (D65, L in [0, 1]). */
+export function rgbaToOklab(rgba) {
+    const lms = applyMatrix(XYZ_TO_LMS, rgbaToXyz(rgba));
+    const root = [Math.cbrt(lms[0]), Math.cbrt(lms[1]), Math.cbrt(lms[2])];
+    const lab = applyMatrix(LMS_TO_OKLAB, root);
+    return { l: lab[0], a: lab[1], b: lab[2] };
+}
+/** Oklab → RGBA, out-of-gamut results clamped to sRGB, alpha passed through. */
+export function oklabToRgba(lab, alpha = 1) {
+    const root = [lab.l, lab.a, lab.b];
+    const lms = applyMatrix(OKLAB_TO_LMS, root);
+    const linear = applyMatrix(OKLAB_TO_LINEAR_SRGB, [lms[0] ** 3, lms[1] ** 3, lms[2] ** 3]);
+    return {
+        r: clamp(linearToSrgbChannel(linear[0]), 0, 255),
+        g: clamp(linearToSrgbChannel(linear[1]), 0, 255),
+        b: clamp(linearToSrgbChannel(linear[2]), 0, 255),
+        a: alpha,
+    };
+}
+/** CIE76 color difference: plain Euclidean distance in CIELAB. */
+export function deltaE76(first, second) {
+    const dl = first.l - second.l;
+    const da = first.a - second.a;
+    const db = first.b - second.b;
+    return Math.sqrt(dl * dl + da * da + db * db);
+}
+const DEG = 180 / Math.PI;
+const RAD = Math.PI / 180;
+/** Hue angle h′ = atan2(b, a) in degrees, normalized to [0, 360). */
+function hueAngle(a, b) {
+    const angle = Math.atan2(b, a) * DEG;
+    return angle < 0 ? angle + 360 : angle;
+}
+/**
+ * CIEDE2000 color difference (CIE 2000, kL = kC = kH = 1), the industry
+ * standard for "how different do these two colors look". The implementation
+ * follows Sharma, Wu & Dalal (2005) including the two hue-average special
+ * cases (zero chroma and hue pairs more than 180° apart); the oracle replays
+ * their published 34-pair reference table on every run.
+ */
+export function deltaE2000(first, second) {
+    const c1 = Math.sqrt(first.a * first.a + first.b * first.b);
+    const c2 = Math.sqrt(second.a * second.a + second.b * second.b);
+    const cBar = (c1 + c2) / 2;
+    const cBar7 = cBar ** 7;
+    const g = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 25 ** 7)));
+    const a1p = (1 + g) * first.a;
+    const a2p = (1 + g) * second.a;
+    const c1p = Math.sqrt(a1p * a1p + first.b * first.b);
+    const c2p = Math.sqrt(a2p * a2p + second.b * second.b);
+    const h1p = hueAngle(a1p, first.b);
+    const h2p = hueAngle(a2p, second.b);
+    const dLp = second.l - first.l;
+    const dCp = c2p - c1p;
+    let dhp = 0;
+    if (c1p * c2p !== 0) {
+        const diff = h2p - h1p;
+        if (Math.abs(diff) <= 180)
+            dhp = diff;
+        else
+            dhp = diff > 180 ? diff - 360 : diff + 360;
+    }
+    const dHp = 2 * Math.sqrt(c1p * c2p) * Math.sin((dhp / 2) * RAD);
+    const lBarP = (first.l + second.l) / 2;
+    const cBarP = (c1p + c2p) / 2;
+    let hBarP = h1p + h2p;
+    if (c1p * c2p !== 0) {
+        const sum = h1p + h2p;
+        if (Math.abs(h1p - h2p) <= 180)
+            hBarP = sum / 2;
+        else if (sum < 360)
+            hBarP = (sum + 360) / 2;
+        else
+            hBarP = (sum - 360) / 2;
+    }
+    const t = 1
+        - 0.17 * Math.cos((hBarP - 30) * RAD)
+        + 0.24 * Math.cos(2 * hBarP * RAD)
+        + 0.32 * Math.cos((3 * hBarP + 6) * RAD)
+        - 0.2 * Math.cos((4 * hBarP - 63) * RAD);
+    const dTheta = 30 * Math.exp(-(((hBarP - 275) / 25) ** 2));
+    const cBarP7 = cBarP ** 7;
+    const rc = 2 * Math.sqrt(cBarP7 / (cBarP7 + 25 ** 7));
+    const lShift = (lBarP - 50) ** 2;
+    const sl = 1 + (0.015 * lShift) / Math.sqrt(20 + lShift);
+    const sc = 1 + 0.045 * cBarP;
+    const sh = 1 + 0.015 * cBarP * t;
+    const rt = -Math.sin(2 * dTheta * RAD) * rc;
+    const termL = dLp / sl;
+    const termC = dCp / sc;
+    const termH = dHp / sh;
+    return Math.sqrt(termL * termL + termC * termC + termH * termH + rt * termC * termH);
+}
+/** Canonical verdict list (drives nothing but documentation and tests). */
+export const DIFFERENCE_VERDICTS = [
+    'identical',
+    'barely-perceptible',
+    'perceptible',
+    'different',
+    'very-different',
+];
+/**
+ * Map a ΔE00 value onto a verdict. Bands follow the widely used reading of
+ * ΔE00: ≤1 is not perceptible, ≤2 is perceptible only on close inspection,
+ * ≤10 is obvious at a glance, and past ~50 the colors read as opposites.
+ */
+export function differenceVerdict(delta) {
+    if (delta <= 1)
+        return 'identical';
+    if (delta <= 2)
+        return 'barely-perceptible';
+    if (delta <= 10)
+        return 'perceptible';
+    if (delta <= 49)
+        return 'different';
+    return 'very-different';
+}
+/** Canonical ramp list (drives the tool enum). */
+export const SCALE_MODES = ['tints', 'shades', 'both', 'between'];
+/** Canonical space list (drives the tool enum). */
+export const SCALE_SPACES = ['oklab', 'srgb'];
+/** Ramp length bounds enforced by color_scale. */
+export const SCALE_MIN_STEPS = 2;
+/** Ramp length upper bound enforced by color_scale. */
+export const SCALE_MAX_STEPS = 11;
+function lerp(from, to, t) {
+    return from + (to - from) * t;
+}
+/** Mix `second` into `first` with the given weight in the requested space. */
+export function scaleMix(first, second, weight, space) {
+    const t = clamp(weight, 0, 1);
+    const alpha = lerp(first.a, second.a, t);
+    if (space === 'oklab') {
+        const from = rgbaToOklab(first);
+        const to = rgbaToOklab(second);
+        return oklabToRgba({ l: lerp(from.l, to.l, t), a: lerp(from.a, to.a, t), b: lerp(from.b, to.b, t) }, alpha);
+    }
+    return {
+        r: lerp(first.r, second.r, t),
+        g: lerp(first.g, second.g, t),
+        b: lerp(first.b, second.b, t),
+        a: alpha,
+    };
+}
+/** The white and black endpoints a tint/shade ramp mixes toward. */
+const SCALE_WHITE = { r: 255, g: 255, b: 255, a: 1 };
+const SCALE_BLACK = { r: 0, g: 0, b: 0, a: 1 };
+/**
+ * Build the ramp between a base color and (depending on `mode`) white, black,
+ * both, or a second color.
+ *
+ *  - `tints`   — base → white, `steps` colors, base first
+ *  - `shades`  — base → black, base first
+ *  - `both`    — black → base → white, evenly weighted, base in the middle
+ *                when `steps` is odd (an even count simply has no exact base)
+ *  - `between` — base → `target`, evenly spaced
+ *
+ * With `space = 'oklab'` the endpoints are interpolated in Oklab, so the steps
+ * are evenly spaced in perceived color rather than in sRGB channel values; any
+ * step that falls outside the sRGB gamut is clamped back into it. Alpha is
+ * interpolated linearly in both spaces.
+ */
+export function colorScale(base, target, mode, steps, space) {
+    const n = clamp(Math.trunc(steps), SCALE_MIN_STEPS, SCALE_MAX_STEPS);
+    const out = [];
+    for (let i = 0; i < n; i += 1) {
+        const t = n > 1 ? i / (n - 1) : 0;
+        if (mode === 'tints')
+            out.push(scaleMix(base, SCALE_WHITE, t, space));
+        else if (mode === 'shades')
+            out.push(scaleMix(base, SCALE_BLACK, t, space));
+        else if (mode === 'both') {
+            const w = -1 + 2 * t;
+            out.push(w < 0 ? scaleMix(base, SCALE_BLACK, -w, space) : scaleMix(base, SCALE_WHITE, w, space));
+        }
+        else {
+            out.push(scaleMix(base, target ?? base, t, space));
+        }
+    }
+    return out;
 }
 /** Convenience: parse a user color string, resolving named colors first. */
 export function parseColorInput(input, namedLookup) {

@@ -2,5 +2,7 @@ node_modules/
 *.log
 .DS_Store
 anchors-*.py
+__pycache__/
+*.pyc
 dist/*.map
 coverage/

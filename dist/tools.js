@@ -6,7 +6,7 @@
  * @module dsh-color/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { adjustHsl, ADJUST_OPS, blendMix, blendOver, BLEND_MODES, CONTRAST_DIRECTIONS, contrastRatio, ensureContrast, harmonyHsl, HARMONY_TYPES, hslToRgb, parseColorInput, relativeLuminance, rgbaToHex, rgbaToHslString, rgbaToHwbString, rgbaToRgbString, rgbToHsl, round, wcagLevel, } from "./color.js";
+import { adjustHsl, ADJUST_OPS, blendMix, blendOver, BLEND_MODES, CONTRAST_DIRECTIONS, colorScale, contrastRatio, deltaE2000, deltaE76, differenceVerdict, ensureContrast, harmonyHsl, HARMONY_TYPES, hslToRgb, parseColorInput, relativeLuminance, rgbaToHex, rgbaToHslString, rgbaToHwbString, rgbaToLab, rgbaToRgbString, rgbToHsl, round, roundOut, SCALE_MAX_STEPS, SCALE_MIN_STEPS, SCALE_MODES, SCALE_SPACES, wcagLevel, } from "./color.js";
 import { lookupNamed, NAMED_COLORS, namesByHex, searchNamed } from "./named.js";
 /** Turn an HSL triplet into the three string formats, keeping alpha. */
 function hslToStrings(h, s, l, a) {
@@ -588,6 +588,246 @@ export function buildColorTools() {
             };
         },
     });
-    return { convert_color, contrast_ratio, color_info, color_scheme, adjust_color, blend_colors, ensure_contrast };
+    const color_difference = defineTool({
+        name: 'color_difference',
+        description: 'Say how different two colors look, numerically and in plain words. Returns the CIEDE2000 '
+            + 'difference (the industry standard perceptual metric used by print, paint and brand-guide QA) plus the '
+            + 'older CIE76 Euclidean difference, both colors\' CIELAB coordinates, a plain-language verdict '
+            + '(identical / barely-perceptible / perceptible / different / very-different) and whether the pair stays '
+            + 'within a tolerance you set. Use it to check "is this really the same brand color?", to compare a '
+            + 'screenshot against a spec, or to pick the nearest match from a palette. Lab uses the D65 white point '
+            + 'and alpha is ignored (the visible channels are compared). Pure local math, read-only.',
+        parameters: {
+            color1: { type: 'string', required: true, description: 'First color, in any supported CSS format.' },
+            color2: { type: 'string', required: true, description: 'Second color, in any supported CSS format.' },
+            method: {
+                type: 'string',
+                enum: ['de2000', 'de76'],
+                description: 'Which difference to report as "deltaE": "de2000" (default, perceptual) or "de76" (plain Lab distance). Both are always returned.',
+            },
+            threshold: {
+                type: 'number',
+                description: 'Tolerance for the "similar" flag, in ΔE00 units (0–100, default 2 = the usual "same color" tolerance for print and UI).',
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    ok: { type: 'boolean', required: true },
+                    error: { type: 'string' },
+                    color1: { type: 'string', required: true },
+                    color2: { type: 'string', required: true },
+                    method: { type: 'string', required: true, enum: ['de2000', 'de76'] },
+                    deltaE: { type: 'number', required: true },
+                    deltaE2000: { type: 'number', required: true },
+                    deltaE76: { type: 'number', required: true },
+                    lab1: {
+                        type: 'object',
+                        required: true,
+                        additionalProperties: false,
+                        properties: {
+                            l: { type: 'number', required: true },
+                            a: { type: 'number', required: true },
+                            b: { type: 'number', required: true },
+                        },
+                    },
+                    lab2: {
+                        type: 'object',
+                        required: true,
+                        additionalProperties: false,
+                        properties: {
+                            l: { type: 'number', required: true },
+                            a: { type: 'number', required: true },
+                            b: { type: 'number', required: true },
+                        },
+                    },
+                    threshold: { type: 'number', required: true },
+                    similar: { type: 'boolean', required: true },
+                    verdict: { type: 'string', required: true },
+                },
+            },
+            render: (_args, value) => {
+                const result = value;
+                if (!result.ok)
+                    return [{ type: 'text', text: `color_difference: ${result.error ?? 'invalid color'}` }];
+                const head = `${result.color1} vs ${result.color2}: ΔE00 ${result.deltaE2000} (ΔE76 ${result.deltaE76}) — ${result.verdict}`;
+                return [{
+                        type: 'text',
+                        text: result.similar ? `${head}, within ${result.threshold}` : `${head}, beyond ${result.threshold}`,
+                    }];
+            },
+        },
+        async execute(args) {
+            // The enum is validated at the schema layer; the guard covers direct calls.
+            const method = args.method === 'de76' ? 'de76' : 'de2000';
+            const threshold = typeof args.threshold === 'number' ? roundOut(Math.min(100, Math.max(0, args.threshold)), 4) : 2;
+            const first = parseColorInput(args.color1, lookupNamed);
+            if (!first.ok) {
+                return {
+                    ok: false,
+                    error: `color1: ${first.error}`,
+                    color1: args.color1,
+                    color2: args.color2,
+                    method,
+                    deltaE: 0,
+                    deltaE2000: 0,
+                    deltaE76: 0,
+                    lab1: { l: 0, a: 0, b: 0 },
+                    lab2: { l: 0, a: 0, b: 0 },
+                    threshold,
+                    similar: false,
+                    verdict: 'unknown',
+                };
+            }
+            const second = parseColorInput(args.color2, lookupNamed);
+            if (!second.ok) {
+                return {
+                    ok: false,
+                    error: `color2: ${second.error}`,
+                    color1: args.color1,
+                    color2: args.color2,
+                    method,
+                    deltaE: 0,
+                    deltaE2000: 0,
+                    deltaE76: 0,
+                    lab1: { l: 0, a: 0, b: 0 },
+                    lab2: { l: 0, a: 0, b: 0 },
+                    threshold,
+                    similar: false,
+                    verdict: 'unknown',
+                };
+            }
+            const lab1 = rgbaToLab(first.color.rgba);
+            const lab2 = rgbaToLab(second.color.rgba);
+            const de2000 = roundOut(deltaE2000(lab1, lab2), 4);
+            const de76 = roundOut(deltaE76(lab1, lab2), 4);
+            return {
+                ok: true,
+                color1: args.color1,
+                color2: args.color2,
+                method,
+                deltaE: method === 'de76' ? de76 : de2000,
+                deltaE2000: de2000,
+                deltaE76: de76,
+                lab1: { l: roundOut(lab1.l, 4), a: roundOut(lab1.a, 4), b: roundOut(lab1.b, 4) },
+                lab2: { l: roundOut(lab2.l, 4), a: roundOut(lab2.a, 4), b: roundOut(lab2.b, 4) },
+                threshold,
+                similar: de2000 <= threshold,
+                verdict: differenceVerdict(de2000),
+            };
+        },
+    });
+    const color_scale = defineTool({
+        name: 'color_scale',
+        description: 'Build an evenly spaced color ramp from a base color — the tint/shade scale a design system needs. '
+            + 'Modes: "tints" (base → white), "shades" (base → black), "both" (black → base → white) and "between" '
+            + '(base → a second color). By default the steps are interpolated in Oklab, so the ramp is even to the eye '
+            + 'instead of bunched up in the shadows; pass space "srgb" for plain channel interpolation (what CSS '
+            + 'gradients and color-mix(in srgb) do). Each step comes back as hex, rgb() and hsl() plus its ΔE00 distance '
+            + 'from the base, so you can see how far the ramp has travelled. Pure local math, read-only.',
+        parameters: {
+            input: { type: 'string', required: true, description: 'Base color, in any supported CSS format.' },
+            mode: {
+                type: 'string',
+                enum: ['tints', 'shades', 'both', 'between'],
+                description: 'Ramp shape: "tints" (default), "shades", "both" (black → base → white) or "between" (needs the `to` color).',
+            },
+            steps: {
+                type: 'number',
+                description: `Number of colors in the ramp (${SCALE_MIN_STEPS}–${SCALE_MAX_STEPS}, default 5). The base color is the first step for tints/shades/between; for "both" an odd count puts it exactly in the middle.`,
+            },
+            to: { type: 'string', description: 'Second color, required by mode "between". Ignored by the other modes.' },
+            space: {
+                type: 'string',
+                enum: ['oklab', 'srgb'],
+                description: 'Interpolation space: "oklab" (default) is perceptually even, "srgb" interpolates raw channel values.',
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    ok: { type: 'boolean', required: true },
+                    error: { type: 'string' },
+                    input: { type: 'string', required: true },
+                    to: { type: 'string' },
+                    mode: { type: 'string', required: true },
+                    space: { type: 'string', required: true },
+                    steps: { type: 'number', required: true },
+                    count: { type: 'number', required: true },
+                    colors: {
+                        type: 'array',
+                        required: true,
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                hex: { type: 'string', required: true },
+                                rgb: { type: 'string', required: true },
+                                hsl: { type: 'string', required: true },
+                                deltaE00: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                },
+            },
+            render: (_args, value) => {
+                const result = value;
+                if (!result.ok)
+                    return [{ type: 'text', text: `color_scale: ${result.error ?? 'invalid color'}` }];
+                const lines = result.colors.map((c) => `  ${c.hex}  ${c.rgb.padEnd(20)}  ${c.hsl.padEnd(26)}  ΔE00 ${c.deltaE00}`);
+                const target = result.to === undefined ? '' : ` → ${result.to}`;
+                return [{
+                        type: 'text',
+                        text: `${result.mode} scale from ${result.input}${target} in ${result.space} (${result.count} colors):\n${lines.join('\n')}`,
+                    }];
+            },
+        },
+        async execute(args) {
+            // The enums are validated at the schema layer; the guards cover direct calls.
+            const mode = SCALE_MODES.includes(args.mode) ? args.mode : 'tints';
+            const space = SCALE_SPACES.includes(args.space) ? args.space : 'oklab';
+            const steps = typeof args.steps === 'number'
+                ? Math.min(SCALE_MAX_STEPS, Math.max(SCALE_MIN_STEPS, Math.trunc(args.steps)))
+                : 5;
+            const base = { ok: false, input: args.input, mode, space, steps, count: 0, colors: [] };
+            const from = parseColorInput(args.input, lookupNamed);
+            if (!from.ok)
+                return { ...base, ok: false, error: from.error };
+            let target;
+            if (mode === 'between') {
+                if (args.to === undefined || args.to.trim() === '') {
+                    return { ...base, ok: false, error: 'mode "between" needs the `to` color' };
+                }
+                const parsed = parseColorInput(args.to, lookupNamed);
+                if (!parsed.ok)
+                    return { ...base, ok: false, error: `to: ${parsed.error}` };
+                target = parsed.color.rgba;
+                base.to = args.to;
+            }
+            const baseLab = rgbaToLab(from.color.rgba);
+            const colors = colorScale(from.color.rgba, target, mode, steps, space).map((rgba) => ({
+                hex: rgbaToHex(rgba),
+                rgb: rgbaToRgbString(rgba),
+                hsl: rgbaToHslString(rgba),
+                deltaE00: roundOut(deltaE2000(baseLab, rgbaToLab(rgba)), 4),
+            }));
+            return { ...base, ok: true, count: colors.length, colors };
+        },
+    });
+    return {
+        convert_color,
+        contrast_ratio,
+        color_info,
+        color_scheme,
+        adjust_color,
+        blend_colors,
+        ensure_contrast,
+        color_difference,
+        color_scale,
+    };
 }
 //# sourceMappingURL=tools.js.map

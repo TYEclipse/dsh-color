@@ -6,6 +6,7 @@
  * @module dsh-color/tools
  */
 import { type ToolDefinition } from '@deepseek-ai/dsh-tools';
+import { type LabColor } from './color.ts';
 export interface ToolSet {
     convert_color: ToolDefinition;
     contrast_ratio: ToolDefinition;
@@ -14,6 +15,8 @@ export interface ToolSet {
     adjust_color: ToolDefinition;
     blend_colors: ToolDefinition;
     ensure_contrast: ToolDefinition;
+    color_difference: ToolDefinition;
+    color_scale: ToolDefinition;
 }
 /** Result of convert_color, kept flat and JsonValue-safe. */
 export interface ConvertResult {
@@ -115,6 +118,41 @@ export interface EnsureContrastResult {
     lightnessShift?: number;
     bestHex?: string;
     bestRatio?: number;
+}
+/** Result of color_difference. */
+export interface DifferenceResult {
+    ok: boolean;
+    error?: string;
+    color1: string;
+    color2: string;
+    method: 'de2000' | 'de76';
+    deltaE: number;
+    deltaE2000: number;
+    deltaE76: number;
+    lab1: LabColor;
+    lab2: LabColor;
+    threshold: number;
+    similar: boolean;
+    verdict: string;
+}
+/** One step of a color_scale ramp. */
+export interface ScaleColor {
+    hex: string;
+    rgb: string;
+    hsl: string;
+    deltaE00: number;
+}
+/** Result of color_scale. */
+export interface ScaleResult {
+    ok: boolean;
+    error?: string;
+    input: string;
+    to?: string;
+    mode: string;
+    space: string;
+    steps: number;
+    count: number;
+    colors: ScaleColor[];
 }
 /** Build all three tool definitions. */
 export declare function buildColorTools(): ToolSet;

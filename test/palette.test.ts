@@ -7,6 +7,14 @@ import {
 import { buildColorTools } from '../src/tools.ts'
 import type { AdjustResult, SchemeResult } from '../src/tools.ts'
 
+/**
+ * ORACLE: test/oracle/anchors.py
+ * Every numeric expectation in this file is printed by the in-repo oracle (an
+ * independent Python implementation of the browser/WCAG/CSS rules; its `--check`
+ * replays the published reference data). Never hand-edit an expectation: re-run
+ * `python3 test/oracle/anchors.py` and copy the printed value.
+ */
+
 const tools = buildColorTools()
 // rc.6 ToolDefinition.execute is typed (args, exec); tests call it directly with
 // one argument, so cast to the single-argument signature (R14 lesson).
@@ -56,7 +64,7 @@ function hexes(result: SchemeResult): string[] {
   return result.colors.map((c) => c.hex)
 }
 
-describe('color_scheme tool (anchors from anchors-palette.py, round-half-up)', () => {
+describe('color_scheme tool (anchors from test/oracle/anchors.py, round-half-up)', () => {
   it('complementary: red gets its exact opposite', async () => {
     const result = await scheme('#ff0000', 'complementary')
     expect(result.ok).toBe(true)
@@ -124,7 +132,7 @@ describe('color_scheme tool (anchors from anchors-palette.py, round-half-up)', (
   })
 })
 
-describe('adjust_color tool (anchors from anchors-palette.py, round-half-up)', () => {
+describe('adjust_color tool (anchors from test/oracle/anchors.py, round-half-up)', () => {
   it('lightens and darkens in percentage points', async () => {
     expect((await adjust('#000000', 'lighten', 50)).hex).toBe('#808080')
     expect((await adjust('#ffffff', 'darken', 20)).hex).toBe('#cccccc')

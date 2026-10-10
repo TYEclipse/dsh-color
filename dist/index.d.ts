@@ -1,7 +1,7 @@
 /**
  * dsh-color — color toolbox for DeepSeek Harness.
  *
- * Seven pure-math tools, zero runtime dependencies:
+ * Nine pure-math tools, zero runtime dependencies:
  *   convert_color  — parse any CSS color (hex / rgb() / hsl() / hwb() / named) and convert formats
  *   contrast_ratio — WCAG 2.x contrast ratio with AA/AAA verdicts for normal or large text
  *   color_info     — CSS named-color lookup by name substring or by exact value
@@ -10,6 +10,8 @@
  *   adjust_color   — lighten / darken / saturate / desaturate / hue-rotate by a given amount
  *   blend_colors   — alpha compositing ("over") and premultiplied sRGB interpolation ("mix")
  *   ensure_contrast— nearest color to a foreground that reaches a WCAG contrast target on a background
+ *   color_difference — CIEDE2000 / CIE76 difference between two colors, with a plain-language verdict
+ *   color_scale    — perceptually even tint / shade / gradient ramps (Oklab by default)
  *
  * Everything is computed locally: no network, no filesystem, no side effects.
  *

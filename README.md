@@ -2,7 +2,8 @@
 
 Color toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh):
 parse and convert any CSS color, evaluate WCAG contrast, look up CSS color names,
-generate harmonious palettes, adjust and blend colors, and repair contrast.
+generate harmonious palettes, adjust and blend colors, repair contrast, measure how
+different two colors look, and build perceptually even tint/shade scales.
 
 **Pure local math — zero runtime dependencies, no network, no side effects.**
 
@@ -17,6 +18,8 @@ generate harmonious palettes, adjust and blend colors, and repair contrast.
 | `adjust_color` | lighten / darken / saturate / desaturate (percentage points) or hue-rotate (degrees) a color — result as hex + rgb + hsl |
 | `blend_colors` | Blend two colors: `over` (alpha compositing — what a translucent overlay actually shows) or `mix` (premultiplied sRGB interpolation, the math behind CSS `color-mix(in srgb, …)`) with a weight |
 | `ensure_contrast` | The nearest color to a foreground that reaches a WCAG target on a given background: hue and saturation kept, lightness moved toward black or white, ratio before/after and the lightness shift reported; says so — with the best achievable ratio — when the target is impossible |
+| `color_difference` | How different two colors look: CIEDE2000 (the perceptual metric used by print/brand QA) and CIE76, both CIELAB colors, a plain-language verdict and a tolerance check — "is this really the same brand color?" |
+| `color_scale` | An evenly spaced ramp from a base color: `tints` (→ white), `shades` (→ black), `both` (black → base → white) or `between` (→ a second color), interpolated in Oklab by default, with each step's ΔE00 from the base |
 
 ## Install
 
@@ -76,6 +79,21 @@ ensure_contrast("#555555", "#000000", level: "AAA")
 
 ensure_contrast("#8080ff", "#808080", level: "AAA")
   → target unreachable; best #000000 at 5.32:1
+
+color_difference("#336699", "#3366ff")
+  → ΔE00 11.7766 (ΔE76 61.1101) — different, beyond the default tolerance of 2
+
+color_difference("#000000", "#010101")
+  → ΔE00 0.1571 — identical: one 8-bit step is invisible
+
+color_scale("#336699", mode: "tints", steps: 5)
+  → #336699, #658bb3, #97b1cd, #cad7e6, #ffffff (even in Oklab)
+
+color_scale("#336699", mode: "between", to: "#ff0080", steps: 4)
+  → #336699, #866092, #c44e8a, #ff0080
+
+color_scale("rgba(51, 102, 153, 0.5)", mode: "tints", steps: 3)
+  → #33669980, #97b1cdbf, #ffffff — alpha rides along the ramp
 ```
 
 ## Feature notes
@@ -114,6 +132,20 @@ ensure_contrast("#8080ff", "#808080", level: "AAA")
   0–255 scale (`rgb(51, 102, 153)` = `#336699`) while a percentage is a share of
   255; in `hsl()`/`hwb()` a bare number means the same as a percentage
   (`hsl(210 100 50)` = `hsl(210, 100%, 50%)`).
+- **Colour difference**: Lab uses the **D65** white point (the classic CIE/ICC
+  convention for sRGB, not CSS `lab()`'s D50), alpha is ignored, and CIEDE2000
+  follows Sharma, Wu & Dalal (2005) including both hue-average special cases.
+  Verdict bands: ≤1 identical, ≤2 barely perceptible, ≤10 perceptible,
+  ≤49 different, above that very different.
+- **Scale math**: `tints`/`shades` run from the base to white/black with the base
+  first; `both` spans black → base → white and puts the base exactly in the middle
+  when the step count is odd; `between` needs a `to` color. Interpolation happens
+  in Oklab by default (perceptually even; steps outside sRGB are clamped back in)
+  or in plain sRGB channels with `space: "srgb"` (what CSS gradients do). Alpha is
+  interpolated linearly, so a tint ramp fades toward opaque white. Each step
+  reports its ΔE00 distance from the base.
+- **Oklab constants** are the 64-bit ones CSS Color 4 recalculated for a
+  consistent D65 reference white, so sRGB white lands on Oklab (1, 0, 0) exactly.
 - **Channel serialization** rounds half up with a floating-point dust guard,
   matching CSS serialization (e.g. `hsl(210, 100%, 50%)` → `rgb(0, 128, 255)`).
 - Out-of-range channels are clamped (modern CSS behavior).

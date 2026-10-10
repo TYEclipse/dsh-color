@@ -4,6 +4,14 @@ import { buildColorTools } from '../src/tools.ts'
 import type { BlendResult, EnsureContrastResult } from '../src/tools.ts'
 import { lookupNamed } from '../src/named.ts'
 
+/**
+ * ORACLE: test/oracle/anchors.py
+ * Every numeric expectation in this file is printed by the in-repo oracle (an
+ * independent Python implementation of the browser/WCAG/CSS rules; its `--check`
+ * replays the published reference data). Never hand-edit an expectation: re-run
+ * `python3 test/oracle/anchors.py` and copy the printed value.
+ */
+
 const tools = buildColorTools()
 const executeBlend = tools.blend_colors.execute as (args: {
   foreground: string
@@ -20,10 +28,11 @@ const executeEnsure = tools.ensure_contrast.execute as (args: {
 }) => Promise<EnsureContrastResult>
 
 /**
- * Every expected value in this file comes from `anchors-blend.py` (R42), an
- * independent implementation written from the specs (CSS Compositing §9.1,
- * CSS Color 4 color-mix, WCAG 2.x) — never from the TypeScript source. If a
- * value here changes, re-run the oracle before touching the expectation.
+ * Every expected value in this file comes from the in-repo oracle
+ * (`test/oracle/anchors.py`, sections C–E, R42/R66), an independent Python
+ * implementation written from the specs (CSS Compositing §9.1, CSS Color 4
+ * color-mix, WCAG 2.x) — never from the TypeScript source. If a value here
+ * changes, re-run the oracle before touching the expectation.
  */
 
 /** Recursively assert no key anywhere holds `undefined` (lossless-JSON gate, R7/R18). */

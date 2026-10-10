@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { buildColorTools } from '../src/tools.ts'
 
+/**
+ * ORACLE: test/oracle/anchors.py
+ * Every numeric expectation in this file is printed by the in-repo oracle (an
+ * independent Python implementation of the browser/WCAG/CSS rules; its `--check`
+ * replays the published reference data). Never hand-edit an expectation: re-run
+ * `python3 test/oracle/anchors.py` and copy the printed value.
+ */
+
 const tools = buildColorTools()
 
 describe('convert_color tool', () => {
