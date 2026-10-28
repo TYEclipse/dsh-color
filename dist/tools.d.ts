@@ -6,7 +6,7 @@
  * @module dsh-color/tools
  */
 import { type ToolDefinition } from '@deepseek-ai/dsh-tools';
-import { type LabColor } from './color.ts';
+import { type CvdType, type LabColor } from './color.ts';
 export interface ToolSet {
     convert_color: ToolDefinition;
     contrast_ratio: ToolDefinition;
@@ -17,6 +17,7 @@ export interface ToolSet {
     ensure_contrast: ToolDefinition;
     color_difference: ToolDefinition;
     color_scale: ToolDefinition;
+    cvd_simulate: ToolDefinition;
 }
 /** Result of convert_color, kept flat and JsonValue-safe. */
 export interface ConvertResult {
@@ -154,6 +155,43 @@ export interface ScaleResult {
     count: number;
     colors: ScaleColor[];
 }
+/** One simulated color in a cvd_simulate result. */
+export interface CvdColorResult {
+    input: string;
+    hex: string;
+    rgb: string;
+    deltaE00: number;
+    clamped: boolean;
+}
+/** One pair of input colors, compared before and after simulation. */
+export interface CvdPairResult {
+    a: string;
+    b: string;
+    before: number;
+    after: number;
+    collapse: boolean;
+}
+/** Result of cvd_simulate. */
+export interface CvdResult {
+    ok: boolean;
+    error?: string;
+    type: CvdType;
+    severity: number;
+    threshold: number;
+    count: number;
+    colors: CvdColorResult[];
+    pairs: CvdPairResult[];
+    confusablePairs: number;
+    worstPair?: {
+        a: string;
+        b: string;
+        after: number;
+    };
+    clamped: boolean;
+    note?: string;
+}
+/** Upper bound on colors per cvd_simulate call (keeps the pair list readable). */
+export declare const CVD_MAX_COLORS = 6;
 /** Build all three tool definitions. */
 export declare function buildColorTools(): ToolSet;
 //# sourceMappingURL=tools.d.ts.map

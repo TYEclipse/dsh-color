@@ -2,6 +2,22 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-color`
 
+## [0.5.0] — 2026-10-29
+### Minor · R83
+- 新增 `cvd_simulate`：一个颜色（或整幅图例）在色觉缺陷者眼里是什么样——按 Machado、Oliveira & Fernandes（2009）随论文发布的矩阵模拟 protan / deutan / tritan，严重度 0–1（1 = 二色觉，中间的档位在相邻两档之间线性插值，即作者推荐的近似）；每个颜色给出模拟后的 hex / rgb 与 ΔE00 位移，一次传多个颜色时再给出**任意两色**模拟前后的 ΔE00，并标出「模拟前可分、模拟后不可分」的**塌陷对**（阈值可设，默认 ΔE00 2）
+- 结果先量化成屏幕真正显示的 8 位颜色再计算距离；超出色域的结果钳制回 sRGB 并标 `clamped`（区分「显示不出来」与「显示出来了」）；中性色原样返回（发布表每一行和都为 1，oracle 自检对 33 个矩阵逐一断言）；忽略 alpha（色觉缺陷关乎色相与彩度）
+- oracle 扩 J 区：独立 Python 实现 + `--check` 新增 5 项（0.0 档恰为单位阵、33 个矩阵行和均为 1、中性色 8 位值不变、二色觉让红/绿对从 ΔE00 71.3 塌到 1.65 而三色觉仍留 66.7、严重度对 #ff0000 单调）；测试 138 → 153 条，覆盖率 94.74% → 95.51%（棘轮已上调）
+- 无损 JSON 检查改用共享模板 `test/helpers/lossless-json.ts`（`assertLossless`：undefined 活键 + `-0` + 非有限数）
+
+### Added (en)
+- `cvd_simulate` — how a color (or a whole palette) looks to someone with color-vision deficiency, using the matrix table published with Machado, Oliveira & Fernandes (2009): protan / deutan / tritan at any severity from 0 (normal vision) to 1 (dichromacy), with severities between the tabulated tenths linearly interpolated between their two neighbours (the authors' recommended approximation). Each color comes back as its simulated hex / rgb() plus its ΔE00 shift; pass several colors to also get **every pair's** ΔE00 before and after, with the pairs that were distinguishable and are not any more flagged as **collapsed** (threshold configurable, default ΔE00 2).
+- Results are quantized to the 8-bit color a screen would show before any distance is measured, and out-of-gamut results are clamped back into sRGB and flagged (`clamped`), so "cannot be displayed" is distinguishable from "was displayed". Neutral colors come back unchanged (every published row sums to 1 — asserted for all 33 matrices by the oracle's self-check). Alpha is ignored: a deficiency is about hue and chroma, not transparency.
+
+### Quality (en)
+- The oracle grew a section J: an independent Python implementation plus five new self-checks (severity 0.0 is exactly the identity; all 33 published matrices sum to 1 per row; neutral colors keep their exact 8-bit value; deuteranopia collapses a red/green pair from ΔE00 71.3 to 1.65 while tritanopia leaves it at 66.7; severity grows monotonically for #ff0000).
+- Tests 138 → 153, coverage 94.74% → 95.51% (baseline ratcheted up).
+- The lossless-JSON guard moved to the shared template `test/helpers/lossless-json.ts` (`assertLossless`: live `undefined` keys, `-0`, non-finite numbers).
+
 ## [0.4.0] — 2026-10-11
 ### Minor · R66
 - 新增 `color_difference`：量化两个颜色「看起来差多少」——CIEDE2000（Sharma、Wu & Dalal 2005 公式，含两个色相均值特例）与 CIE76、两者的 CIELAB 坐标（D65 白点）、白话判定（identical / barely-perceptible / perceptible / different / very-different）与容差检查（默认 2，判定一律用感知量 ΔE00）

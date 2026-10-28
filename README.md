@@ -3,7 +3,8 @@
 Color toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh):
 parse and convert any CSS color, evaluate WCAG contrast, look up CSS color names,
 generate harmonious palettes, adjust and blend colors, repair contrast, measure how
-different two colors look, and build perceptually even tint/shade scales.
+different two colors look, build perceptually even tint/shade scales, and simulate
+how a palette looks to someone with color-vision deficiency.
 
 **Pure local math — zero runtime dependencies, no network, no side effects.**
 
@@ -20,6 +21,7 @@ different two colors look, and build perceptually even tint/shade scales.
 | `ensure_contrast` | The nearest color to a foreground that reaches a WCAG target on a given background: hue and saturation kept, lightness moved toward black or white, ratio before/after and the lightness shift reported; says so — with the best achievable ratio — when the target is impossible |
 | `color_difference` | How different two colors look: CIEDE2000 (the perceptual metric used by print/brand QA) and CIE76, both CIELAB colors, a plain-language verdict and a tolerance check — "is this really the same brand color?" |
 | `color_scale` | An evenly spaced ramp from a base color: `tints` (→ white), `shades` (→ black), `both` (black → base → white) or `between` (→ a second color), interpolated in Oklab by default, with each step's ΔE00 from the base |
+| `cvd_simulate` | How a color (or a whole palette) looks to someone with color-vision deficiency: protan / deutan / tritan simulation using the Machado, Oliveira & Fernandes (2009) model at any severity from 0 (normal) to 1 (dichromacy), each color's simulated hex plus its ΔE00 shift, and every pair's ΔE00 before/after so you can see which pairs collapse |
 
 ## Install
 
@@ -94,6 +96,16 @@ color_scale("#336699", mode: "between", to: "#ff0080", steps: 4)
 
 color_scale("rgba(51, 102, 153, 0.5)", mode: "tints", steps: 3)
   → #33669980, #97b1cdbf, #ffffff — alpha rides along the ramp
+
+cvd_simulate(colors: ["#e53935", "#2ca02c"], type: "deutan")
+  → #e53935 → #98892e, #2ca02c → #968838 — ΔE00 71.33 → 1.65: the red and green
+    a chart legend puts side by side become the same olive
+
+cvd_simulate(colors: ["#ff0000"], type: "tritan")
+  → #ff000f, ΔE00 1.46 — tritanopia barely moves pure red
+
+cvd_simulate(colors: ["#ff0000"], type: "deutan", severity: 0.5)
+  → #c37600, ΔE00 25.14 — half-severity deuteranomaly, between the two
 ```
 
 ## Feature notes
@@ -146,6 +158,18 @@ color_scale("rgba(51, 102, 153, 0.5)", mode: "tints", steps: 3)
   reports its ΔE00 distance from the base.
 - **Oklab constants** are the 64-bit ones CSS Color 4 recalculated for a
   consistent D65 reference white, so sRGB white lands on Oklab (1, 0, 0) exactly.
+- **CVD simulation**: the matrices are the ones published with Machado, Oliveira
+  & Fernandes (2009) — 11 severities per deficiency class, applied to **linear**
+  RGB, with severities between the tabulated tenths linearly interpolated
+  between their two neighbours (the authors' own recommended approximation).
+  Severity 1.0 is dichromacy, 0.5 a moderate anomalous trichromacy. Results are
+  quantized to the 8-bit color a screen would show **before** any distance is
+  measured, out-of-gamut results are clamped and flagged (`clamped`), and a pair
+  counts as **collapsed** only when it was distinguishable before the simulation
+  (ΔE00 ≥ your threshold) and is not afterwards — the regression a chart legend
+  actually cares about. Neutral colors come back unchanged: every published row
+  sums to 1, which the oracle's self-check asserts for all 33 matrices. Alpha is
+  ignored, since a deficiency is about hue and chroma, not transparency.
 - **Channel serialization** rounds half up with a floating-point dust guard,
   matching CSS serialization (e.g. `hsl(210, 100%, 50%)` → `rgb(0, 128, 255)`).
 - Out-of-range channels are clamped (modern CSS behavior).

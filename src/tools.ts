@@ -16,6 +16,9 @@ import {
   CONTRAST_DIRECTIONS,
   colorScale,
   contrastRatio,
+  CVD_MAX_SEVERITY,
+  CVD_MIN_SEVERITY,
+  CVD_TYPES,
   deltaE2000,
   deltaE76,
   differenceVerdict,
@@ -37,10 +40,12 @@ import {
   SCALE_MIN_STEPS,
   SCALE_MODES,
   SCALE_SPACES,
+  simulateCvd,
   wcagLevel,
   type AdjustOp,
   type BlendMode,
   type ContrastDirection,
+  type CvdType,
   type HarmonyType,
   type LabColor,
   type Rgba,
@@ -59,6 +64,7 @@ export interface ToolSet {
   ensure_contrast: ToolDefinition
   color_difference: ToolDefinition
   color_scale: ToolDefinition
+  cvd_simulate: ToolDefinition
 }
 
 /** Result of convert_color, kept flat and JsonValue-safe. */
@@ -208,6 +214,43 @@ export interface ScaleResult {
   count: number
   colors: ScaleColor[]
 }
+
+/** One simulated color in a cvd_simulate result. */
+export interface CvdColorResult {
+  input: string
+  hex: string
+  rgb: string
+  deltaE00: number
+  clamped: boolean
+}
+
+/** One pair of input colors, compared before and after simulation. */
+export interface CvdPairResult {
+  a: string
+  b: string
+  before: number
+  after: number
+  collapse: boolean
+}
+
+/** Result of cvd_simulate. */
+export interface CvdResult {
+  ok: boolean
+  error?: string
+  type: CvdType
+  severity: number
+  threshold: number
+  count: number
+  colors: CvdColorResult[]
+  pairs: CvdPairResult[]
+  confusablePairs: number
+  worstPair?: { a: string; b: string; after: number }
+  clamped: boolean
+  note?: string
+}
+
+/** Upper bound on colors per cvd_simulate call (keeps the pair list readable). */
+export const CVD_MAX_COLORS = 6
 
 /** Turn an HSL triplet into the three string formats, keeping alpha. */
 function hslToStrings(h: number, s: number, l: number, a: number): SchemeColor {
@@ -1010,6 +1053,198 @@ export function buildColorTools(): ToolSet {
     },
   })
 
+  const cvd_simulate = defineTool({
+    name: 'cvd_simulate',
+    description: 'Show how colors look to someone with color-vision deficiency (CVD), and whether a palette '
+      + 'survives it. Simulates protan / deutan / tritan vision with the Machado, Oliveira & Fernandes (2009) '
+      + 'model, whose published severity table runs from 0 (normal vision) to 1 (dichromacy); severities in '
+      + 'between are interpolated between the two nearest published matrices. Each input color comes back as the '
+      + 'simulated hex, rgb() and its ΔE00 shift, and when you pass several colors the tool also reports every '
+      + 'pair\'s ΔE00 before and after — flagging the pairs that become indistinguishable (below your threshold), '
+      + 'which is the question a chart legend or a status palette actually has to answer. Alpha is ignored '
+      + '(simulation is about hue/chroma, not transparency) and out-of-gamut results are clamped with a flag, '
+      + 'since the clamped color is what a screen shows. Pure local math, read-only.',
+    parameters: {
+      colors: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: `The colors to simulate, in any supported CSS format (1–${CVD_MAX_COLORS}). Pass a whole `
+          + 'palette to get the pairwise collapse analysis.',
+      },
+      type: {
+        type: 'string',
+        enum: ['deutan', 'protan', 'tritan'],
+        description: 'Deficiency class: "deutan" (default — the most common, red/green M-cone), "protan" (red/green L-cone) or "tritan" (blue/yellow S-cone).',
+      },
+      severity: {
+        type: 'number',
+        description: 'How severe, 0–1 (default 1 = dichromacy, the complete form; 0.5 ≈ moderate anomalous trichromacy).',
+      },
+      threshold: {
+        type: 'number',
+        description: 'ΔE00 below which two colors count as indistinguishable (0–100, default 2 — the usual "same color" tolerance).',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          type: { type: 'string', required: true, enum: ['deutan', 'protan', 'tritan'] },
+          severity: { type: 'number', required: true },
+          threshold: { type: 'number', required: true },
+          count: { type: 'number', required: true },
+          clamped: { type: 'boolean', required: true },
+          confusablePairs: { type: 'number', required: true },
+          note: { type: 'string' },
+          colors: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                input: { type: 'string', required: true },
+                hex: { type: 'string', required: true },
+                rgb: { type: 'string', required: true },
+                deltaE00: { type: 'number', required: true },
+                clamped: { type: 'boolean', required: true },
+              },
+            },
+          },
+          pairs: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                a: { type: 'string', required: true },
+                b: { type: 'string', required: true },
+                before: { type: 'number', required: true },
+                after: { type: 'number', required: true },
+                collapse: { type: 'boolean', required: true },
+              },
+            },
+          },
+          worstPair: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              a: { type: 'string', required: true },
+              b: { type: 'string', required: true },
+              after: { type: 'number', required: true },
+            },
+          },
+        },
+      },
+      render: (_args: { colors: string[]; type?: string; severity?: number; threshold?: number }, value: unknown) => {
+        const result = value as CvdResult
+        if (!result.ok) return [{ type: 'text', text: `cvd_simulate: ${result.error ?? 'invalid color'}` }]
+        const lines = result.colors.map((c) => `  ${c.input} → ${c.hex}  ${c.rgb.padEnd(20)}  ΔE00 ${c.deltaE00}${c.clamped ? '  (clamped)' : ''}`)
+        const pairLines = result.pairs.map((p) => {
+          const tail = p.collapse ? `collapsed below ${result.threshold}` : 'still distinguishable'
+          return `  ${p.a} vs ${p.b}: ΔE00 ${p.before} → ${p.after} — ${tail}`
+        })
+        const head = `${result.type} severity ${result.severity} (${result.count} color${result.count === 1 ? '' : 's'})`
+        const tail = pairLines.length === 0 ? [] : ['', ...pairLines]
+        return [{ type: 'text', text: `${head}:\n${lines.join('\n')}${tail.length === 0 ? '' : `\n${tail.join('\n')}`}` }]
+      },
+    },
+    async execute(args: { colors: string[]; type?: string; severity?: number; threshold?: number }): Promise<CvdResult> {
+      // The enums are validated at the schema layer; the guards cover direct calls.
+      const type: CvdType = CVD_TYPES.includes(args.type as CvdType) ? (args.type as CvdType) : 'deutan'
+      const severity = typeof args.severity === 'number'
+        ? roundOut(Math.min(CVD_MAX_SEVERITY, Math.max(CVD_MIN_SEVERITY, args.severity)), 4)
+        : 1
+      const threshold = typeof args.threshold === 'number' ? roundOut(Math.min(100, Math.max(0, args.threshold)), 4) : 2
+      const inputs = Array.isArray(args.colors) ? args.colors : []
+      const base: CvdResult = {
+        ok: false,
+        type,
+        severity,
+        threshold,
+        count: 0,
+        colors: [],
+        pairs: [],
+        confusablePairs: 0,
+        clamped: false,
+      }
+      if (inputs.length === 0) return { ...base, error: 'give at least one color' }
+      if (inputs.length > CVD_MAX_COLORS) {
+        return { ...base, error: `at most ${CVD_MAX_COLORS} colors per call (got ${inputs.length})` }
+      }
+
+      const parsed: { input: string; rgba: Rgba }[] = []
+      let invalid: string | undefined
+      for (const [index, input] of inputs.entries()) {
+        const result = parseColorInput(input, lookupNamed)
+        if (!result.ok) {
+          invalid = `colors[${index}]: ${result.error}`
+          break
+        }
+        parsed.push({ input, rgba: result.color.rgba })
+      }
+      if (invalid !== undefined) return { ...base, error: invalid }
+
+      const rows = parsed.map((entry) => ({ entry, sim: simulateCvd(entry.rgba, type, severity) }))
+      const colors = rows.map(({ entry, sim }): CvdColorResult => ({
+        input: entry.input,
+        hex: rgbaToHex(sim.rgba),
+        rgb: rgbaToRgbString(sim.rgba),
+        deltaE00: roundOut(deltaE2000(rgbaToLab(entry.rgba), rgbaToLab(sim.rgba)), 4),
+        clamped: sim.clamped,
+      }))
+
+      const pairs: CvdPairResult[] = []
+      for (const [index, first] of rows.entries()) {
+        for (const second of rows.slice(index + 1)) {
+          const before = roundOut(deltaE2000(rgbaToLab(first.entry.rgba), rgbaToLab(second.entry.rgba)), 4)
+          const after = roundOut(deltaE2000(rgbaToLab(first.sim.rgba), rgbaToLab(second.sim.rgba)), 4)
+          pairs.push({
+            a: first.entry.input,
+            b: second.entry.input,
+            before,
+            after,
+            // "Collapse" is the regression that matters: distinguishable before, not after.
+            collapse: before >= threshold && after < threshold,
+          })
+        }
+      }
+      const confusablePairs = pairs.filter((pair) => pair.collapse).length
+      let worstPair: CvdResult['worstPair']
+      for (const pair of pairs) {
+        if (pair.before < threshold) continue
+        if (worstPair === undefined || pair.after < worstPair.after) {
+          worstPair = { a: pair.a, b: pair.b, after: pair.after }
+        }
+      }
+      const clamped = rows.some((row) => row.sim.clamped)
+      let note: string | undefined
+      if (confusablePairs > 0) {
+        note = `${confusablePairs} of ${pairs.length} pair${pairs.length === 1 ? '' : 's'} drop below ΔE00 ${threshold} under this simulation`
+      } else if (pairs.length > 0) {
+        note = `every pair stays at or above ΔE00 ${threshold} under this simulation`
+      } else {
+        note = 'one color only — pass a palette to get the pairwise collapse check'
+      }
+      return {
+        ...base,
+        ok: true,
+        count: colors.length,
+        colors,
+        pairs,
+        confusablePairs,
+        ...(worstPair === undefined ? {} : { worstPair }),
+        clamped,
+        note,
+      }
+    },
+  })
+
   return {
     convert_color,
     contrast_ratio,
@@ -1020,5 +1255,6 @@ export function buildColorTools(): ToolSet {
     ensure_contrast,
     color_difference,
     color_scale,
+    cvd_simulate,
   }
 }

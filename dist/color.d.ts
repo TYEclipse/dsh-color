@@ -270,6 +270,42 @@ export declare function scaleMix(first: Rgba, second: Rgba, weight: number, spac
  * interpolated linearly in both spaces.
  */
 export declare function colorScale(base: Rgba, target: Rgba | undefined, mode: ScaleMode, steps: number, space: ScaleSpace): Rgba[];
+/** The three deficiency classes dsh-color simulates. */
+export type CvdType = 'protan' | 'deutan' | 'tritan';
+/** Canonical type list (drives the tool enum). */
+export declare const CVD_TYPES: readonly CvdType[];
+/** Severity is a fraction: 0 = normal vision, 1 = dichromacy. */
+export declare const CVD_MIN_SEVERITY = 0;
+export declare const CVD_MAX_SEVERITY = 1;
+/**
+ * The matrix for an arbitrary severity. The published table is tabulated every
+ * 0.1, so a value in between is linearly interpolated between its two
+ * neighbours — the approach the authors' own tutorial recommends for
+ * "higher precision severities" without re-running their model.
+ */
+export declare function cvdMatrix(type: CvdType, severity: number): Mat3;
+/** One simulated color plus the honesty flags around gamut clamping. */
+export interface CvdSimulation {
+    rgba: Rgba;
+    /** True when the matrix pushed a channel outside 0–1 and clamping changed the result. */
+    clamped: boolean;
+    /** Largest linear-RGB excursion outside 0–1 before clamping (0 = displayable as-is). */
+    excursion: number;
+}
+/**
+ * Simulate how a color looks to someone with the given deficiency.
+ *
+ * The published matrices act on **linear** RGB, so the sRGB channels are
+ * decoded first and re-encoded after the matrix; out-of-gamut results are
+ * clamped (the clamped color is what a display shows) and the excursion is
+ * reported so a caller can tell "cannot be displayed" from "was displayed".
+ * The result is quantized to the 8-bit value a screen would show **before**
+ * anyone measures it: the distances this tool reports are between colors you
+ * can actually see, which is also why a neutral color comes back unchanged
+ * (the published rows sum to 1 only to six decimals). Alpha is carried through
+ * untouched — transparency is not a color channel.
+ */
+export declare function simulateCvd(input: Rgba, type: CvdType, severity: number): CvdSimulation;
 /** Convenience: parse a user color string, resolving named colors first. */
 export declare function parseColorInput(input: string, namedLookup: (name: string) => string | undefined): ParseResult;
 export {};
