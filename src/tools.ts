@@ -35,6 +35,7 @@ import {
   rgbaToRgbString,
   rgbToHsl,
   round,
+  roundChannel,
   roundOut,
   SCALE_MAX_STEPS,
   SCALE_MIN_STEPS,
@@ -222,6 +223,22 @@ export interface CvdColorResult {
   rgb: string
   deltaE00: number
   clamped: boolean
+  /** Present only when the caller passed a `background`. */
+  contrast?: CvdContrastResult
+}
+
+/**
+ * WCAG contrast of one color against the caller's background, before and after
+ * the simulation. Levels are for **normal** text (AA 4.5, AAA 7) — a caller who
+ * cares about large text can compare `after` against 3 / 4.5 directly.
+ */
+export interface CvdContrastResult {
+  before: number
+  after: number
+  levelBefore: 'AAA' | 'AA' | 'fail'
+  levelAfter: 'AAA' | 'AA' | 'fail'
+  /** True when the pair passed before the simulation and fails after it. */
+  regression: boolean
 }
 
 /** One pair of input colors, compared before and after simulation. */
@@ -245,6 +262,17 @@ export interface CvdResult {
   pairs: CvdPairResult[]
   confusablePairs: number
   worstPair?: { a: string; b: string; after: number }
+  /** Present only when a `background` was given. */
+  background?: {
+    input: string
+    hex: string
+    rgb: string
+    simulatedHex: string
+    simulatedRgb: string
+    clamped: boolean
+  }
+  /** Number of colors that passed WCAG AA before the simulation and fail after it. */
+  contrastRegressions?: number
   clamped: boolean
   note?: string
 }
@@ -1061,9 +1089,14 @@ export function buildColorTools(): ToolSet {
       + 'between are interpolated between the two nearest published matrices. Each input color comes back as the '
       + 'simulated hex, rgb() and its ΔE00 shift, and when you pass several colors the tool also reports every '
       + 'pair\'s ΔE00 before and after — flagging the pairs that become indistinguishable (below your threshold), '
-      + 'which is the question a chart legend or a status palette actually has to answer. Alpha is ignored '
-      + '(simulation is about hue/chroma, not transparency) and out-of-gamut results are clamped with a flag, '
-      + 'since the clamped color is what a screen shows. Pure local math, read-only.',
+      + 'which is the question a chart legend or a status palette actually has to answer. Pass `background` to '
+      + 'also get the WCAG contrast of each color against that background computed **on the simulated colors** — '
+      + 'the check for colored text or iconography on a tinted surface. That contrast number is a screening '
+      + 'measure, not a conformance claim: WCAG 2.x is defined for standard observers, so read a pass as "no '
+      + 'contrast risk detected under this simulation". Simulation is about hue/chroma, so a translucent input is '
+      + 'first composited over the background when one is given (alpha has no meaning without a backdrop); '
+      + 'out-of-gamut results are clamped with a flag, since the clamped color is what a screen shows. '
+      + 'Pure local math, read-only.',
     parameters: {
       colors: {
         type: 'array',
@@ -1071,6 +1104,11 @@ export function buildColorTools(): ToolSet {
         items: { type: 'string' },
         description: `The colors to simulate, in any supported CSS format (1–${CVD_MAX_COLORS}). Pass a whole `
           + 'palette to get the pairwise collapse analysis.',
+      },
+      background: {
+        type: 'string',
+        description: 'Optional backdrop color (any supported CSS format, must be opaque). When given, each color '
+          + 'also gets its WCAG contrast against this backdrop before and after the simulation.',
       },
       type: {
         type: 'string',
@@ -1099,7 +1137,20 @@ export function buildColorTools(): ToolSet {
           count: { type: 'number', required: true },
           clamped: { type: 'boolean', required: true },
           confusablePairs: { type: 'number', required: true },
+          contrastRegressions: { type: 'number' },
           note: { type: 'string' },
+          background: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              input: { type: 'string', required: true },
+              hex: { type: 'string', required: true },
+              rgb: { type: 'string', required: true },
+              simulatedHex: { type: 'string', required: true },
+              simulatedRgb: { type: 'string', required: true },
+              clamped: { type: 'boolean', required: true },
+            },
+          },
           colors: {
             type: 'array',
             required: true,
@@ -1112,6 +1163,17 @@ export function buildColorTools(): ToolSet {
                 rgb: { type: 'string', required: true },
                 deltaE00: { type: 'number', required: true },
                 clamped: { type: 'boolean', required: true },
+                contrast: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    before: { type: 'number', required: true },
+                    after: { type: 'number', required: true },
+                    levelBefore: { type: 'string', required: true, enum: ['AAA', 'AA', 'fail'] },
+                    levelAfter: { type: 'string', required: true, enum: ['AAA', 'AA', 'fail'] },
+                    regression: { type: 'boolean', required: true },
+                  },
+                },
               },
             },
           },
@@ -1141,20 +1203,28 @@ export function buildColorTools(): ToolSet {
           },
         },
       },
-      render: (_args: { colors: string[]; type?: string; severity?: number; threshold?: number }, value: unknown) => {
+      render: (_args: { colors: string[]; background?: string; type?: string; severity?: number; threshold?: number }, value: unknown) => {
         const result = value as CvdResult
         if (!result.ok) return [{ type: 'text', text: `cvd_simulate: ${result.error ?? 'invalid color'}` }]
-        const lines = result.colors.map((c) => `  ${c.input} → ${c.hex}  ${c.rgb.padEnd(20)}  ΔE00 ${c.deltaE00}${c.clamped ? '  (clamped)' : ''}`)
+        const lines = result.colors.map((c) => {
+          const head = `  ${c.input} → ${c.hex}  ${c.rgb.padEnd(20)}  ΔE00 ${c.deltaE00}${c.clamped ? '  (clamped)' : ''}`
+          if (c.contrast === undefined) return head
+          const verdict = c.contrast.regression ? '  ⚠️ AA lost' : ''
+          return `${head}\n      contrast ${c.contrast.before}:1 ${c.contrast.levelBefore} → ${c.contrast.after}:1 ${c.contrast.levelAfter}${verdict}`
+        })
         const pairLines = result.pairs.map((p) => {
           const tail = p.collapse ? `collapsed below ${result.threshold}` : 'still distinguishable'
           return `  ${p.a} vs ${p.b}: ΔE00 ${p.before} → ${p.after} — ${tail}`
         })
         const head = `${result.type} severity ${result.severity} (${result.count} color${result.count === 1 ? '' : 's'})`
+        const bgLine = result.background === undefined
+          ? []
+          : [`on ${result.background.input} (${result.background.hex} → ${result.background.simulatedHex} simulated)`]
         const tail = pairLines.length === 0 ? [] : ['', ...pairLines]
-        return [{ type: 'text', text: `${head}:\n${lines.join('\n')}${tail.length === 0 ? '' : `\n${tail.join('\n')}`}` }]
+        return [{ type: 'text', text: `${head}${bgLine.length === 0 ? '' : ` ${bgLine[0]}`}:\n${lines.join('\n')}${tail.length === 0 ? '' : `\n${tail.join('\n')}`}` }]
       },
     },
-    async execute(args: { colors: string[]; type?: string; severity?: number; threshold?: number }): Promise<CvdResult> {
+    async execute(args: { colors: string[]; background?: string; type?: string; severity?: number; threshold?: number }): Promise<CvdResult> {
       // The enums are validated at the schema layer; the guards cover direct calls.
       const type: CvdType = CVD_TYPES.includes(args.type as CvdType) ? (args.type as CvdType) : 'deutan'
       const severity = typeof args.severity === 'number'
@@ -1190,19 +1260,56 @@ export function buildColorTools(): ToolSet {
       }
       if (invalid !== undefined) return { ...base, error: invalid }
 
-      const rows = parsed.map((entry) => ({ entry, sim: simulateCvd(entry.rgba, type, severity) }))
-      const colors = rows.map(({ entry, sim }): CvdColorResult => ({
-        input: entry.input,
-        hex: rgbaToHex(sim.rgba),
-        rgb: rgbaToRgbString(sim.rgba),
-        deltaE00: roundOut(deltaE2000(rgbaToLab(entry.rgba), rgbaToLab(sim.rgba)), 4),
-        clamped: sim.clamped,
-      }))
+      // An optional backdrop turns this into a contrast check as well. A
+      // translucent backdrop is refused rather than guessed: contrast against
+      // "50 % white" is not a number, the color behind it is.
+      let backdrop: { input: string; rgba: Rgba } | undefined
+      if (typeof args.background === 'string' && args.background.trim() !== '') {
+        const parsedBackground = parseColorInput(args.background, lookupNamed)
+        if (!parsedBackground.ok) return { ...base, error: `background: ${parsedBackground.error}` }
+        if (parsedBackground.color.rgba.a !== 1) {
+          return {
+            ...base,
+            error: 'background must be opaque (alpha 1) — the contrast of anything against a translucent backdrop depends on what sits behind it',
+          }
+        }
+        backdrop = { input: args.background, rgba: parsedBackground.color.rgba }
+      }
+
+      // What the eye actually receives: a translucent color is composited over
+      // the backdrop first, and the composite is quantized to the 8-bit value a
+      // screen paints before anything is simulated or measured — otherwise a
+      // 127.5 channel would drift through the matrix and pick a side at random.
+      const quantize = (color: Rgba): Rgba => ({ r: roundChannel(color.r), g: roundChannel(color.g), b: roundChannel(color.b), a: color.a })
+      const rows = parsed.map((entry) => {
+        const shown = backdrop === undefined || entry.rgba.a === 1 ? entry.rgba : quantize(blendOver(entry.rgba, backdrop.rgba))
+        return { entry, shown, sim: simulateCvd(shown, type, severity) }
+      })
+      const simBackdrop = backdrop === undefined ? undefined : simulateCvd(backdrop.rgba, type, severity)
+
+      const colors = rows.map(({ entry, shown, sim }): CvdColorResult => {
+        const color: CvdColorResult = {
+          input: entry.input,
+          hex: rgbaToHex(sim.rgba),
+          rgb: rgbaToRgbString(sim.rgba),
+          deltaE00: roundOut(deltaE2000(rgbaToLab(shown), rgbaToLab(sim.rgba)), 4),
+          clamped: sim.clamped,
+        }
+        if (backdrop === undefined || simBackdrop === undefined) return color
+        const before = round(contrastRatio(shown, backdrop.rgba), 2)
+        const after = round(contrastRatio(sim.rgba, simBackdrop.rgba), 2)
+        const levelBefore = wcagLevel(before, false)
+        const levelAfter = wcagLevel(after, false)
+        return {
+          ...color,
+          contrast: { before, after, levelBefore, levelAfter, regression: levelBefore !== 'fail' && levelAfter === 'fail' },
+        }
+      })
 
       const pairs: CvdPairResult[] = []
       for (const [index, first] of rows.entries()) {
         for (const second of rows.slice(index + 1)) {
-          const before = roundOut(deltaE2000(rgbaToLab(first.entry.rgba), rgbaToLab(second.entry.rgba)), 4)
+          const before = roundOut(deltaE2000(rgbaToLab(first.shown), rgbaToLab(second.shown)), 4)
           const after = roundOut(deltaE2000(rgbaToLab(first.sim.rgba), rgbaToLab(second.sim.rgba)), 4)
           pairs.push({
             a: first.entry.input,
@@ -1223,14 +1330,21 @@ export function buildColorTools(): ToolSet {
         }
       }
       const clamped = rows.some((row) => row.sim.clamped)
-      let note: string | undefined
-      if (confusablePairs > 0) {
-        note = `${confusablePairs} of ${pairs.length} pair${pairs.length === 1 ? '' : 's'} drop below ΔE00 ${threshold} under this simulation`
-      } else if (pairs.length > 0) {
-        note = `every pair stays at or above ΔE00 ${threshold} under this simulation`
+      const contrastRegressions = colors.filter((color) => color.contrast?.regression === true).length
+      const notes: string[] = []
+      if (pairs.length > 0) {
+        notes.push(confusablePairs > 0
+          ? `${confusablePairs} of ${pairs.length} pair${pairs.length === 1 ? '' : 's'} drop below ΔE00 ${threshold} under this simulation`
+          : `every pair stays at or above ΔE00 ${threshold} under this simulation`)
       } else {
-        note = 'one color only — pass a palette to get the pairwise collapse check'
+        notes.push('one color only — pass a palette to get the pairwise collapse check')
       }
+      if (backdrop !== undefined) {
+        notes.push(contrastRegressions > 0
+          ? `${contrastRegressions} of ${colors.length} color${colors.length === 1 ? '' : 's'} lose WCAG AA against the background`
+          : `every color keeps its WCAG AA level against the background`)
+      }
+      const note = notes.join('; ')
       return {
         ...base,
         ok: true,
@@ -1239,6 +1353,19 @@ export function buildColorTools(): ToolSet {
         pairs,
         confusablePairs,
         ...(worstPair === undefined ? {} : { worstPair }),
+        ...(backdrop === undefined || simBackdrop === undefined
+          ? {}
+          : {
+              background: {
+                input: backdrop.input,
+                hex: rgbaToHex(backdrop.rgba),
+                rgb: rgbaToRgbString(backdrop.rgba),
+                simulatedHex: rgbaToHex(simBackdrop.rgba),
+                simulatedRgb: rgbaToRgbString(simBackdrop.rgba),
+                clamped: simBackdrop.clamped,
+              },
+              contrastRegressions,
+            }),
         clamped,
         note,
       }

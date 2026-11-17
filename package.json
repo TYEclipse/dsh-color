@@ -1,7 +1,7 @@
 {
   "name": "dsh-color",
-  "version": "0.5.0",
-  "description": "Color toolbox for DeepSeek Harness (dsh): parse and convert any CSS color (hex / rgb / hsl / hwb / named), WCAG contrast ratios with AA/AAA verdicts, named-color lookup, harmonious palette generation (complementary / analogous / triadic / split-complementary / tetradic / square / monochromatic), color adjustments (lighten / darken / saturate / desaturate / hue-rotate), blending, contrast repair, perceptual color difference (CIEDE2000 / CIE76 with a plain-language verdict) and perceptually even tint/shade scales interpolated in Oklab — zero runtime dependencies, pure math",
+  "version": "0.6.0",
+  "description": "Color toolbox for DeepSeek Harness (dsh): parse and convert any CSS color (hex / rgb / hsl / hwb / named), WCAG contrast ratios with AA/AAA verdicts, named-color lookup, harmonious palette generation (complementary / analogous / triadic / split-complementary / tetradic / square / monochromatic), color adjustments (lighten / darken / saturate / desaturate / hue-rotate), blending, contrast repair, perceptual color difference (CIEDE2000 / CIE76 with a plain-language verdict), perceptually even tint/shade scales interpolated in Oklab, and color-vision-deficiency simulation (protan / deutan / tritan) with palette-collapse detection and the WCAG contrast each color keeps on a given background — zero runtime dependencies, pure math",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,7 +31,10 @@
     "accessibility",
     "palette",
     "color-scheme",
-    "harmony"
+    "harmony",
+    "cvd",
+    "color-blindness",
+    "color-vision-deficiency"
   ],
   "license": "MIT",
   "repository": {

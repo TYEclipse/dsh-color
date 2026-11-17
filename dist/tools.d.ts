@@ -162,6 +162,21 @@ export interface CvdColorResult {
     rgb: string;
     deltaE00: number;
     clamped: boolean;
+    /** Present only when the caller passed a `background`. */
+    contrast?: CvdContrastResult;
+}
+/**
+ * WCAG contrast of one color against the caller's background, before and after
+ * the simulation. Levels are for **normal** text (AA 4.5, AAA 7) — a caller who
+ * cares about large text can compare `after` against 3 / 4.5 directly.
+ */
+export interface CvdContrastResult {
+    before: number;
+    after: number;
+    levelBefore: 'AAA' | 'AA' | 'fail';
+    levelAfter: 'AAA' | 'AA' | 'fail';
+    /** True when the pair passed before the simulation and fails after it. */
+    regression: boolean;
 }
 /** One pair of input colors, compared before and after simulation. */
 export interface CvdPairResult {
@@ -187,6 +202,17 @@ export interface CvdResult {
         b: string;
         after: number;
     };
+    /** Present only when a `background` was given. */
+    background?: {
+        input: string;
+        hex: string;
+        rgb: string;
+        simulatedHex: string;
+        simulatedRgb: string;
+        clamped: boolean;
+    };
+    /** Number of colors that passed WCAG AA before the simulation and fail after it. */
+    contrastRegressions?: number;
     clamped: boolean;
     note?: string;
 }

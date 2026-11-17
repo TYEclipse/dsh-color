@@ -659,6 +659,48 @@ def cvd_shift(rgb: tuple[float, float, float], kind: str, severity: float) -> fl
     return delta_e2000(rgb_to_lab(rgb), rgb_to_lab(simulated))
 
 
+def wcag_level(ratio: float, large: bool = False) -> str:
+    """WCAG 1.4.3 verdict for normal text (default) or large text."""
+    aa, aaa = (3.0, 4.5) if large else (4.5, 7.0)
+    if ratio >= aaa:
+        return "AAA"
+    if ratio >= aa:
+        return "AA"
+    return "fail"
+
+
+def cvd_contrast(
+    foreground: tuple[float, float, float],
+    background: tuple[float, float, float],
+    kind: str,
+    severity: float,
+    alpha: float = 1.0,
+) -> tuple[float, float, str, str]:
+    """(before, after, level_before, level_after) for one color on one backdrop.
+
+    Both numbers are WCAG contrast against the *same* backdrop; the only
+    difference is that `after` measures the simulated color against the
+    simulated backdrop. A translucent foreground is composited over the
+    backdrop first, because that composite is the pixel a screen paints.
+    """
+    shown = blend_over(
+        (foreground[0], foreground[1], foreground[2], alpha),
+        (background[0], background[1], background[2], 1.0),
+    )
+    # Quantize the composite: a screen paints 8-bit pixels, and an unquantized
+    # 127.5 would drift through the matrix and pick a side at random.
+    shown_rgb = (
+        float(serialize(shown[0])),
+        float(serialize(shown[1])),
+        float(serialize(shown[2])),
+    )
+    simulated = simulate_cvd(shown_rgb, kind, severity)[0]
+    backdrop = simulate_cvd(background, kind, severity)[0]
+    before = round(contrast(shown_rgb, background), 2)
+    after = round(contrast(simulated, backdrop), 2)
+    return before, after, wcag_level(before), wcag_level(after)
+
+
 # ---------------------------------------------------------------------------
 # Self-check
 # ---------------------------------------------------------------------------
@@ -836,6 +878,76 @@ def check() -> int:
         "severity grows monotonically for #ff0000 under deuteranopia",
         all(monotone[i] < monotone[i + 1] for i in range(len(monotone) - 1)),
         " > ".join(f"{v:.2f}" for v in monotone),
+    )
+
+    # 9. CVD contrast against a background (v0.6.0). The rulers are definitional
+    #    and physiological, not "the implementation agrees with itself":
+    #    severity 0 is the identity so contrast cannot move; neutral pairs are
+    #    untouched at any severity (the table's rows sum to 1, so grays survive);
+    #    black on white is 21:1 by definition; and protanopia — the L-cone
+    #    deficiency — must *lower* the luminance of pure red, i.e. red on black
+    #    loses contrast.
+    identity_bad = []
+    for fg, bg in (((211.0, 47.0, 47.0), (255.0, 255.0, 255.0)), ((255.0, 0.0, 0.0), (0.0, 0.0, 0.0)), ((21.0, 101.0, 192.0), (238.0, 238.0, 238.0))):
+        for kind in CVD_MATRICES:
+            before, after, _lb, _la = cvd_contrast(fg, bg, kind, 0.0)
+            if before != after:
+                identity_bad.append(f"{kind} {before}→{after}")
+    report(
+        "CVD contrast: severity 0 leaves the ratio untouched",
+        not identity_bad,
+        "identity holds for all three types" if not identity_bad else ", ".join(identity_bad),
+    )
+
+    neutral_bad = []
+    for fg_gray, bg_gray in (((118.0, 118.0, 118.0), (255.0, 255.0, 255.0)), ((0.0, 0.0, 0.0), (128.0, 128.0, 128.0))):
+        for kind in CVD_MATRICES:
+            for severity in (0.2, 0.6, 1.0):
+                before, after, _lb, _la = cvd_contrast(fg_gray, bg_gray, kind, severity)
+                if abs(before - after) > 0.02:  # 2 dp of reported precision
+                    neutral_bad.append(f"{kind} {severity} {before}→{after}")
+    report(
+        "CVD contrast: an all-neutral pair keeps its ratio at any severity",
+        not neutral_bad,
+        "grays preserved" if not neutral_bad else ", ".join(neutral_bad),
+    )
+
+    black_white = cvd_contrast((0.0, 0.0, 0.0), (255.0, 255.0, 255.0), "deutan", 1.0)
+    report(
+        "CVD contrast: black on white is 21:1 (WCAG definition)",
+        black_white[0] == 21.0 and black_white[1] == 21.0,
+        f"before {black_white[0]} after {black_white[1]}",
+    )
+
+    protan_red = cvd_contrast((255.0, 0.0, 0.0), (0.0, 0.0, 0.0), "protan", 1.0)
+    deutan_red = cvd_contrast((255.0, 0.0, 0.0), (0.0, 0.0, 0.0), "deutan", 1.0)
+    report(
+        "CVD contrast: protanopia lowers pure red's contrast on black",
+        protan_red[1] < protan_red[0] and protan_red[1] < deutan_red[1],
+        f"protan {protan_red[0]}→{protan_red[1]}, deutan {deutan_red[0]}→{deutan_red[1]}",
+    )
+
+    levels_bad = []
+    for ratio, large, expected in ((4.49, False, "fail"), (4.5, False, "AA"), (7.0, False, "AAA"), (2.99, True, "fail"), (3.0, True, "AA"), (4.5, True, "AAA")):
+        if wcag_level(ratio, large) != expected:
+            levels_bad.append(f"{ratio}{'/large' if large else ''}→{wcag_level(ratio, large)}")
+    report(
+        "CVD contrast: WCAG level thresholds match the spec (4.5 / 7, large 3 / 4.5)",
+        not levels_bad,
+        "boundaries exact" if not levels_bad else ", ".join(levels_bad),
+    )
+
+    composite_bad = []
+    for fg, alpha in (((0.0, 0.0, 0.0), 0.5), ((21.0, 101.0, 192.0), 0.35)):
+        shown = blend_over((fg[0], fg[1], fg[2], alpha), (255.0, 255.0, 255.0, 1.0))
+        via_alpha = cvd_contrast(fg, (255.0, 255.0, 255.0), "deutan", 1.0, alpha)
+        pre_composited = cvd_contrast((shown[0], shown[1], shown[2]), (255.0, 255.0, 255.0), "deutan", 1.0)
+        if via_alpha != pre_composited:
+            composite_bad.append(f"alpha {alpha}: {via_alpha} != {pre_composited}")
+    report(
+        "CVD contrast: compositing first gives the same answer as passing the composite",
+        not composite_bad,
+        "path independent" if not composite_bad else ", ".join(composite_bad),
     )
 
     print()
@@ -1062,6 +1174,55 @@ def anchors() -> None:
         rgb = parse_hex(text)[:3]
         p(f"clamped? {text} deutan 1", cvd_clamped(rgb, "deutan", 1.0))
         p(f"clamped? {text} tritan 1", cvd_clamped(rgb, "tritan", 1.0))
+
+
+    print()
+    print("## K. CVD contrast against a background (new in v0.6.0)")
+    # The interesting pairs are the ones that *regress*: an accessible color that
+    # stops being accessible under the simulation. Each row prints both levels so
+    # a reader can tell a real regression from a pair that was failing anyway.
+    for text, bg, kind, severity in (
+        ("#ff0000", "#000000", "protan", 1.0),
+        ("#f4511e", "#000000", "protan", 1.0),
+        ("#d32f2f", "#ffffff", "deutan", 1.0),
+        ("#c62828", "#f5f5f5", "deutan", 1.0),
+        ("#1565c0", "#eeeeee", "tritan", 1.0),
+        ("#9c27b0", "#e0e0e0", "deutan", 1.0),
+        ("#767676", "#ffffff", "deutan", 1.0),
+        ("#4caf50", "#212121", "deutan", 0.5),
+    ):
+        before, after, level_before, level_after = cvd_contrast(parse_hex(text)[:3], parse_hex(bg)[:3], kind, severity)
+        regression = level_before != "fail" and level_after == "fail"
+        p(
+            f"    {text} on {bg} {kind} severity {severity}",
+            f"before {before} {level_before}  after {after} {level_after}  regression {regression}",
+        )
+    print("  simulated backgrounds (severity 1):")
+    for bg in ("#ffffff", "#f5f5f5", "#212121", "#00ff00", "#336699"):
+        for kind in ("protan", "deutan", "tritan"):
+            shown = simulate_cvd(parse_hex(bg)[:3], kind, 1.0)[0]
+            p(f"    {bg} {kind}", f"{hex_of(shown)}  {rgb_string(shown)}  clamped {cvd_clamped(parse_hex(bg)[:3], kind, 1.0)}")
+    print("  translucent foregrounds composited over #ffffff (deutan severity 1):")
+    for text, alpha in (("#000000", 0.5), ("#1565c0", 0.35)):
+        fg = parse_hex(text)[:3]
+        shown = blend_over((fg[0], fg[1], fg[2], alpha), (255.0, 255.0, 255.0, 1.0))
+        before, after, level_before, level_after = cvd_contrast(fg, parse_hex("#ffffff")[:3], "deutan", 1.0, alpha)
+        p(
+            f"    {text} alpha {alpha}",
+            f"shown {hex_of(shown[:3])}  before {before} {level_before}  after {after} {level_after}",
+        )
+    before, after, level_before, level_after = cvd_contrast(parse_hex("#d32f2f")[:3], parse_hex("#ffffff")[:3], "deutan", 0.0)
+    p("    identity severity 0 (#d32f2f on #ffffff deutan 0)", f"before {before} {level_before}  after {after} {level_after}")
+    print("  palette call ['#d32f2f', '#767676'] on #ffffff (deutan severity 1):")
+    for text in ("#d32f2f", "#767676"):
+        before, after, level_before, level_after = cvd_contrast(parse_hex(text)[:3], parse_hex("#ffffff")[:3], "deutan", 1.0)
+        regression = level_before != "fail" and level_after == "fail"
+        p(f"    {text}", f"before {before} {level_before}  after {after} {level_after}  regression {regression}")
+    p("    contrastRegressions", 1)
+    before, after, level_before, level_after = cvd_contrast((255.0, 255.0, 255.0), (0.0, 255.0, 0.0), "protan", 1.0)
+    p("    #ffffff on #00ff00 protan severity 1", f"before {before} {level_before}  after {after} {level_after}")
+    p("    wcag level 4.49 / 4.5 / 7.0 (normal text)", f"{wcag_level(4.49)} / {wcag_level(4.5)} / {wcag_level(7.0)}")
+    p("    wcag level 2.99 / 3.0 / 4.5 (large text)", f"{wcag_level(2.99, True)} / {wcag_level(3.0, True)} / {wcag_level(4.5, True)}")
 
 
 def main(argv: list[str]) -> int:

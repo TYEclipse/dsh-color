@@ -13,7 +13,8 @@
  *   color_difference — CIEDE2000 / CIE76 difference between two colors, with a plain-language verdict
  *   color_scale    — perceptually even tint / shade / gradient ramps (Oklab by default)
  *   cvd_simulate   — how colors look with protan / deutan / tritan color-vision deficiency, and
- *                    which pairs of a palette collapse (Machado, Oliveira & Fernandes 2009)
+ *                    which pairs of a palette collapse (Machado, Oliveira & Fernandes 2009);
+ *                    with a background, also the WCAG contrast the simulation leaves behind
  *
  * Everything is computed locally: no network, no filesystem, no side effects.
  *

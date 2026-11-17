@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-color`
 
+## [0.6.0] — 2026-11-18
+### Minor · R103
+- [自主进化] R103 cvd_simulate 新增 background：模拟后的 WCAG 对比度 + AA 退化标记（诚实契约：无背景时字段缺席）
+
 ## [0.5.0] — 2026-10-29
 ### Minor · R83
 - 新增 `cvd_simulate`：一个颜色（或整幅图例）在色觉缺陷者眼里是什么样——按 Machado、Oliveira & Fernandes（2009）随论文发布的矩阵模拟 protan / deutan / tritan，严重度 0–1（1 = 二色觉，中间的档位在相邻两档之间线性插值，即作者推荐的近似）；每个颜色给出模拟后的 hex / rgb 与 ΔE00 位移，一次传多个颜色时再给出**任意两色**模拟前后的 ΔE00，并标出「模拟前可分、模拟后不可分」的**塌陷对**（阈值可设，默认 ΔE00 2）

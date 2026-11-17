@@ -16,7 +16,7 @@ import { assertLossless } from './helpers/lossless-json.ts'
 
 const tools = buildColorTools()
 const simulate = tools.cvd_simulate.execute as (
-  args: { colors: string[]; type?: string; severity?: number; threshold?: number },
+  args: { colors: string[]; background?: string; type?: string; severity?: number; threshold?: number },
 ) => Promise<CvdResult>
 
 function text(block: unknown): string {
@@ -219,5 +219,168 @@ describe('cvd_simulate tool', () => {
     expect(line).toContain('#e53935 → #98892e')
     expect(line).toContain('#2ca02c → #968838')
     expect(line).toContain('collapsed below 2')
+  })
+
+  it('measures contrast against a background, before and after the simulation', async () => {
+    // Pure red on black: protanopia strips red of its luminance, so a color that
+    // comfortably passes AA for everyone else fails for a protan viewer.
+    const result = await simulate({ colors: ['#ff0000'], background: '#000000', type: 'protan', severity: 1 })
+    assertLossless(result)
+    expect(result.ok).toBe(true)
+    expect(result.background).toEqual({
+      input: '#000000',
+      hex: '#000000',
+      rgb: 'rgb(0, 0, 0)',
+      simulatedHex: '#000000',
+      simulatedRgb: 'rgb(0, 0, 0)',
+      clamped: false,
+    })
+    expect(result.colors[0]?.contrast).toEqual({
+      before: 5.25,
+      after: 3.29,
+      levelBefore: 'AA',
+      levelAfter: 'fail',
+      regression: true,
+    })
+    expect(result.contrastRegressions).toBe(1)
+    expect(result.note).toBe('one color only — pass a palette to get the pairwise collapse check; 1 of 1 color lose WCAG AA against the background')
+  })
+
+  it('does not call every drop a regression', async () => {
+    // #767676 is the classic AA boundary and stays exactly where it was: neutrals
+    // survive the matrices, so there is nothing to flag.
+    const boundary = await simulate({ colors: ['#767676'], background: '#ffffff', type: 'deutan', severity: 1 })
+    assertLossless(boundary)
+    expect(boundary.colors[0]?.contrast).toEqual({
+      before: 4.54,
+      after: 4.54,
+      levelBefore: 'AA',
+      levelAfter: 'AA',
+      regression: false,
+    })
+    expect(boundary.contrastRegressions).toBe(0)
+    expect(boundary.note).toBe('one color only — pass a palette to get the pairwise collapse check; every color keeps its WCAG AA level against the background')
+
+    // Moderate severity on a dark backdrop: contrast dips but stays passing.
+    const partial = await simulate({ colors: ['#4caf50'], background: '#212121', type: 'deutan', severity: 0.5 })
+    assertLossless(partial)
+    expect(partial.colors[0]?.contrast).toEqual({
+      before: 5.79,
+      after: 5.66,
+      levelBefore: 'AA',
+      levelAfter: 'AA',
+      regression: false,
+    })
+  })
+
+  it('adds a contrast verdict to each color of a palette', async () => {
+    const result = await simulate({ colors: ['#d32f2f', '#767676'], background: '#ffffff', type: 'deutan', severity: 1 })
+    assertLossless(result)
+    expect(result.colors[0]?.contrast).toEqual({
+      before: 4.98,
+      after: 4.19,
+      levelBefore: 'AA',
+      levelAfter: 'fail',
+      regression: true,
+    })
+    expect(result.colors[1]?.contrast).toEqual({
+      before: 4.54,
+      after: 4.54,
+      levelBefore: 'AA',
+      levelAfter: 'AA',
+      regression: false,
+    })
+    expect(result.contrastRegressions).toBe(1)
+    expect(result.note).toContain('1 of 2 colors lose WCAG AA against the background')
+  })
+
+  it('composites a translucent color over the background first', async () => {
+    // 50 % black on white *is* #808080 (the composite is quantized to the 8-bit
+    // pixel a screen paints before it is simulated or measured).
+    const result = await simulate({ colors: ['rgba(0, 0, 0, 0.5)'], background: '#ffffff', type: 'deutan', severity: 1 })
+    assertLossless(result)
+    expect(result.colors[0]?.hex).toBe('#808080')
+    expect(result.colors[0]?.deltaE00).toBe(0)
+    expect(result.colors[0]?.contrast).toEqual({
+      before: 3.95,
+      after: 3.95,
+      levelBefore: 'fail',
+      levelAfter: 'fail',
+      regression: false,
+    })
+  })
+
+  it('leaves the ratio untouched at severity 0', async () => {
+    const result = await simulate({ colors: ['#d32f2f'], background: '#ffffff', type: 'deutan', severity: 0 })
+    assertLossless(result)
+    expect(result.colors[0]?.contrast).toEqual({
+      before: 4.98,
+      after: 4.98,
+      levelBefore: 'AA',
+      levelAfter: 'AA',
+      regression: false,
+    })
+  })
+
+  it('reports the simulated background, clamping included', async () => {
+    const result = await simulate({ colors: ['#ffffff'], background: '#00ff00', type: 'protan', severity: 1 })
+    assertLossless(result)
+    expect(result.background).toEqual({
+      input: '#00ff00',
+      hex: '#00ff00',
+      rgb: 'rgb(0, 255, 0)',
+      simulatedHex: '#ffe500',
+      simulatedRgb: 'rgb(255, 229, 0)',
+      clamped: true,
+    })
+    expect(result.colors[0]?.contrast).toEqual({
+      before: 1.37,
+      after: 1.28,
+      levelBefore: 'fail',
+      levelAfter: 'fail',
+      regression: false,
+    })
+  })
+
+  it('omits every contrast field when no background is given', async () => {
+    // The honest contract: "no backdrop" is expressed by absence, not by a zero.
+    const result = await simulate({ colors: ['#ff0000'], type: 'deutan', severity: 1 })
+    assertLossless(result)
+    expect(result.background).toBeUndefined()
+    expect(result.contrastRegressions).toBeUndefined()
+    expect(result.colors[0]?.contrast).toBeUndefined()
+    expect('background' in result).toBe(false)
+    expect('contrastRegressions' in result).toBe(false)
+    expect('contrast' in (result.colors[0] ?? {})).toBe(false)
+  })
+
+  it('refuses a translucent backdrop instead of guessing what is behind it', async () => {
+    const translucent = await simulate({ colors: ['#ff0000'], background: '#ffffff80', type: 'deutan' })
+    assertLossless(translucent)
+    expect(translucent.ok).toBe(false)
+    expect(translucent.error).toBe('background must be opaque (alpha 1) — the contrast of anything against a translucent backdrop depends on what sits behind it')
+    expect(translucent.colors).toEqual([])
+
+    const unparseable = await simulate({ colors: ['#ff0000'], background: 'notacolor', type: 'deutan' })
+    expect(unparseable.ok).toBe(false)
+    expect(unparseable.error).toMatch(/^background: unrecognized color format/)
+
+    const blank = await simulate({ colors: ['#ff0000'], background: '   ', type: 'deutan' })
+    expect(blank.ok).toBe(true)
+    expect(blank.background).toBeUndefined()
+  })
+
+  it('renders the contrast line and the background in the summary', async () => {
+    const args = { colors: ['#d32f2f'], background: '#ffffff', type: 'deutan', severity: 1 }
+    const result = await simulate(args)
+    const line = text(tools.cvd_simulate.output.render(args, result))
+    expect(line).toContain('deutan severity 1 (1 color) on #ffffff (#ffffff → #ffffff simulated)')
+    expect(line).toContain('contrast 4.98:1 AA → 4.19:1 fail')
+    expect(line).toContain('⚠️ AA lost')
+
+    const plain = { colors: ['#d32f2f'], type: 'deutan', severity: 1 }
+    const plainLine = text(tools.cvd_simulate.output.render(plain, await simulate(plain)))
+    expect(plainLine).not.toContain('contrast')
+    expect(plainLine).toContain('deutan severity 1 (1 color):')
   })
 })

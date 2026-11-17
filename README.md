@@ -21,7 +21,7 @@ how a palette looks to someone with color-vision deficiency.
 | `ensure_contrast` | The nearest color to a foreground that reaches a WCAG target on a given background: hue and saturation kept, lightness moved toward black or white, ratio before/after and the lightness shift reported; says so — with the best achievable ratio — when the target is impossible |
 | `color_difference` | How different two colors look: CIEDE2000 (the perceptual metric used by print/brand QA) and CIE76, both CIELAB colors, a plain-language verdict and a tolerance check — "is this really the same brand color?" |
 | `color_scale` | An evenly spaced ramp from a base color: `tints` (→ white), `shades` (→ black), `both` (black → base → white) or `between` (→ a second color), interpolated in Oklab by default, with each step's ΔE00 from the base |
-| `cvd_simulate` | How a color (or a whole palette) looks to someone with color-vision deficiency: protan / deutan / tritan simulation using the Machado, Oliveira & Fernandes (2009) model at any severity from 0 (normal) to 1 (dichromacy), each color's simulated hex plus its ΔE00 shift, and every pair's ΔE00 before/after so you can see which pairs collapse |
+| `cvd_simulate` | How a color (or a whole palette) looks to someone with color-vision deficiency: protan / deutan / tritan simulation using the Machado, Oliveira & Fernandes (2009) model at any severity from 0 (normal) to 1 (dichromacy), each color's simulated hex plus its ΔE00 shift, and every pair's ΔE00 before/after so you can see which pairs collapse. Pass `background` to also get each color's WCAG contrast against that backdrop before and after the simulation — catching text that is accessible for everyone else but not for a color-blind reader |
 
 ## Install
 
@@ -106,6 +106,14 @@ cvd_simulate(colors: ["#ff0000"], type: "tritan")
 
 cvd_simulate(colors: ["#ff0000"], type: "deutan", severity: 0.5)
   → #c37600, ΔE00 25.14 — half-severity deuteranomaly, between the two
+
+cvd_simulate(colors: ["#ff0000"], background: "#000000", type: "protan")
+  → contrast 5.25:1 AA → 3.29:1 fail — red on black passes for everyone else
+    and fails for a protan reader (the L-cone carries red's luminance)
+
+cvd_simulate(colors: ["#d32f2f", "#767676"], background: "#ffffff", type: "deutan")
+  → #d32f2f: 4.98:1 AA → 4.19:1 fail (regression); #767676: 4.54:1 AA → 4.54:1 AA
+    — a neutral gray keeps its ratio, so only the red is flagged
 ```
 
 ## Feature notes
@@ -170,6 +178,17 @@ cvd_simulate(colors: ["#ff0000"], type: "deutan", severity: 0.5)
   actually cares about. Neutral colors come back unchanged: every published row
   sums to 1, which the oracle's self-check asserts for all 33 matrices. Alpha is
   ignored, since a deficiency is about hue and chroma, not transparency.
+- **CVD contrast** (`background`): contrast is a luminance question, and CVD
+  preserves luminance far more than it preserves chroma — so expect the ratio to
+  move less than the ΔE00 pairs do, and expect *protanopia* to be the class that
+  moves it most (the L-cone carries red's contribution to brightness, so pure
+  red on black drops from 5.25:1 AA to 3.29:1 fail). Read the number as a
+  screening result, not a conformance claim: WCAG 2.x is defined for standard
+  observers, so "passes here" means no contrast risk was detected *under this
+  simulation*. A translucent color is composited over the background and
+  quantized to the 8-bit pixel a screen paints before it is simulated; a
+  translucent *backdrop* is refused, because the contrast of anything against it
+  depends on what sits behind it. Levels are for normal text (AA 4.5 / AAA 7).
 - **Channel serialization** rounds half up with a floating-point dust guard,
   matching CSS serialization (e.g. `hsl(210, 100%, 50%)` → `rgb(0, 128, 255)`).
 - Out-of-range channels are clamped (modern CSS behavior).
